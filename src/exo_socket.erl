@@ -136,9 +136,9 @@ connect_upgrade(X, Protos0, Timeout) ->
 					opts=Opts1,
 					tags={ssl,ssl_closed,ssl_error}},
 		    connect_upgrade(X1, Protos1, Timeout);
-		Error={error,Reason} ->
+		Error={error,_Reason} ->
 		    ?dbg("exo_socket: ssl:connect error=~w\n", 
-			 [Reason]),
+			 [_Reason]),
 		    Error
 	    end;
 	[http|Protos1] ->
@@ -243,9 +243,9 @@ accept_upgrade(X=#exo_socket { mdata = M }, Protos0, Timeout) ->
 				      opts=Opts1,
 				      tags={ssl,ssl_closed,ssl_error}},
 		    accept_upgrade(X1, Protos1, Timeout);
-		Error={error,Reason} ->
+		Error={error,_Reason} ->
 		    ?dbg("exo_socket: ssl:ssl_accept error=~w\n", 
-			 [Reason]),
+			 [_Reason]),
 		    Error
 	    end;
 	[probe_ssl|Protos1] ->

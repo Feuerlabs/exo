@@ -40,8 +40,8 @@ test() ->
 			    ?MODULE, []).
 
 init(Socket, Options) ->
-    {ok,{IP,Port}} = exo_socket:peername(Socket),
-    ?dbg("exo_http_server: connection from: ~p : ~p\n", [IP, Port]),
+    {ok,{_IP,_Port}} = exo_socket:peername(Socket),
+    ?dbg("exo_http_server: connection from: ~p : ~p\n",[_IP, _Port]),
     Access = proplists:get_value(access, Options, []),
     {ok, #state{ access=Access}}.    
 
@@ -62,7 +62,7 @@ data(Socket, Data, State) ->
 	{http_error, ?NL} ->
 	    {ok, State};
 	_ when is_list(Data); is_binary(Data) ->
-	    io:format("Request data: ~p\n", [Data]),
+	    ?dbg("Request data: ~p\n", [Data]),
 	    {stop, {error,sync_error}, State};
 	Error ->
 	    {stop, Error, State}
@@ -83,9 +83,9 @@ handle_request(Socket, R, State) ->
 	   exo_http:format_hdr(R#http_request.headers),
 	   ?CRNL]]),
     case exo_http:recv_body(Socket, R) of
-	{ok, Body} ->
+	{ok, _Body} ->
 	    U = R#http_request.uri,
-	    ?dbg("-BODY:\n~s\n-END-BODY\n", [Body]),
+	    ?dbg("-BODY:\n~s\n-END-BODY\n", [_Body]),
 	    if R#http_request.method == 'GET',
 	       U#url.path == "/quit" ->
 		    response(Socket, "close", 200, "OK", "QUIT"),
@@ -118,5 +118,5 @@ response(S, Connection, Status, Phrase, String) ->
 		exo_http:format_hdr(H),
 		?CRNL,
 		String],
-    io:format("Response:\n~s\n", [Response]),
+    ?dbg("Response:\n~s\n", [Response]),
     exo_socket:send(S, Response).

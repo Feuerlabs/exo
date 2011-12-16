@@ -142,7 +142,7 @@ handle_info({Tag,Socket,Data}, State) when
       %% FIXME: put socket tag in State for correct matching
       (Tag =:= tcp orelse Tag =:= ssl orelse Tag =:= http), 
       Socket =:= (State#state.socket)#exo_socket.socket ->
-    io:format("exo_socket_session: got ~p\n", [{Tag,Socket,Data}]),
+    ?dbg("exo_socket_session: got ~p\n", [{Tag,Socket,Data}]),
     CSt0 = State#state.state,
     case apply(State#state.module, data, [State#state.socket,Data,CSt0]) of
 	{ok,CSt1} ->
@@ -163,7 +163,7 @@ handle_info({Tag,Socket,Data}, State) when
 handle_info({Tag,Socket}, State) when
       (Tag =:= tcp_closed orelse Tag =:= ssl_closed),
       Socket =:= (State#state.socket)#exo_socket.socket ->
-    io:format("exo_socket_session: got ~p\n", [{Tag,Socket}]),
+    ?dbg("exo_socket_session: got ~p\n", [{Tag,Socket}]),
     CSt0 = State#state.state,
     case apply(State#state.module, close, [State#state.socket,CSt0]) of
 	{ok,CSt1} ->
@@ -172,7 +172,7 @@ handle_info({Tag,Socket}, State) when
 handle_info({Tag,Socket,Error}, State) when 
       (Tag =:= tcp_error orelse Tag =:= ssl_error),
       Socket =:= (State#state.socket)#exo_socket.socket ->
-    io:format("exo_socket_session: got ~p\n", [{Tag,Socket,Error}]),
+    ?dbg("exo_socket_session: got ~p\n", [{Tag,Socket,Error}]),
     CSt0 = State#state.state,
     case apply(State#state.module, error, [State#state.socket,Error,CSt0]) of
 	{ok,CSt1} ->
@@ -182,7 +182,7 @@ handle_info({Tag,Socket,Error}, State) when
     end;
     
 handle_info(_Info, State) ->
-    io:format("Got info: ~p\n", [_Info]),
+    ?dbg("Got info: ~p\n", [_Info]),
     {noreply, State}.
 
 %%--------------------------------------------------------------------
