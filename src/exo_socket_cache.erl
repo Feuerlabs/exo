@@ -1,18 +1,18 @@
 %%% @author Tony Rogvall <tony@rogvall.se>
 %%% @copyright (C) 2011, Tony Rogvall
 %%% @doc
-%%%     Keep track on open http/https sessions
+%%%     Cache open sockets that can be reused (like http/https connections)
 %%% @end
 %%% Created : 16 Dec 2011 by Tony Rogvall <tony@rogvall.se>
 
--module(exo_http_session).
+-module(exo_socket_cache).
 
 -behaviour(gen_server).
 
 %%--------------------------------------------------------------------
 %% Include files
 %%--------------------------------------------------------------------
--include("../include/exo_http.hrl").
+
 -include("exo_socket.hrl").
 
 -define(DEFAULT_CACHE_SIZE, 256).
@@ -41,7 +41,7 @@
 	  sock_tab  %% set: Socket => {Proto,Vsn,Addr,Port},#exo_socket
 	 }).
 
--define(SERVER, exo_http_session).
+-define(SERVER, exo_socket_cache).
 
 %%====================================================================
 %% External functions
@@ -61,22 +61,19 @@ open(Proto, Vsn, Host, Port) ->
 
 
 open(Proto, Vsn, Host, Port, Timeout) ->
-    start(),
+    start(),  %% fixme: add is supervisor
     case inet:getaddrs(Host, inet, Timeout) of
 	{ok,IPs} ->
-	    case gen_server:call(?SERVER,
-				 {alloc,Proto,Vsn,IPs,Port,self()}) of
+	    case gen_server:call(?SERVER,{alloc,Proto,Vsn,IPs,Port,self()}) of
 		{ok, HS} ->
-		    exo_socket:setopts(HS,[{packet,http}]),
 		    {ok,HS};
 		{error,_} ->
-		    connect(IPs,Port,Proto,Vsn,
-			    [{active,false}], Timeout, undefined)
+		    connect(IPs,Port,Proto,Vsn,[{active,false}],
+			    Timeout, undefined)
 	    end;
 	Error ->
 	    Error
     end.
-
 
 close(HS) ->
     exo_socket:setopts(HS, [{active,false}]),
@@ -122,8 +119,8 @@ connect([],_Port,_Proto,_Vsn,_Opts,_Timeout,Reason) ->
 %%          {stop, Reason}
 %%--------------------------------------------------------------------
 init([]) ->
-    RefTab = ets:new(exo_http_session_ref, [bag]),
-    SockTab = ets:new(exo_http_session_sock, [set]),
+    RefTab = ets:new(exo_socket_cache_ref, [bag]),
+    SockTab = ets:new(exo_socket_cache_sock, [set]),
     {ok, #state{ ref_tab = RefTab, sock_tab = SockTab }}.
 
 %%--------------------------------------------------------------------

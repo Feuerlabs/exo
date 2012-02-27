@@ -302,9 +302,10 @@ xrequest(Proxy,Port,Req,Body,Timeout) ->
 		#url { scheme = https } -> [tcp,ssl,http];
 		_ -> [tcp,http]
 	    end,
-    case exo_http_session:open(Proto,Req#http_request.version,
+    case exo_socket_cache:open(Proto,Req#http_request.version,
 			       Proxy,Port,Timeout) of
 	{ok,S} ->
+	    exo_socket:setopts(S, [{mode,binary},{packet,http}]),
 	    case request(S, Req, Body, true, Timeout) of
 		{ok,Resp,RespBody} ->
 		    close(S,Req,Resp),
@@ -364,8 +365,14 @@ open(Request,Timeout) ->
 		https -> [tcp,ssl,http];
 		_ -> [tcp,http]
 	    end,
-    exo_http_session:open(Proto,Request#http_request.version,
-			  Url#url.host,Port,Timeout).
+    case exo_socket_cache:open(Proto,Request#http_request.version,
+			       Url#url.host,Port,Timeout) of
+	{ok,S} ->
+	    exo_socket:setopts(S, [{mode,binary},{packet,http}]),
+	    {ok,S};
+	Error ->
+	    Error
+    end.
 
 close(S, Req, Resp) ->
     case do_close(Req,Resp) of
@@ -374,7 +381,7 @@ close(S, Req, Resp) ->
 	    exo_socket:close(S);
 	false ->
 	    ?dbg("session close\n",[]),
-	    exo_http_session:close(S)
+	    exo_socket_cache:close(S)
     end.
 
 do_close(Req, Res) ->
@@ -629,6 +636,8 @@ recv_body_chunk(S, Acc, Timeout) ->
 		    case recv_chunk_trailer(S, [], Timeout) of
 			{ok,_TR} ->
 			    ?dbg("CHUNK TRAILER: ~p\n", [_TR]),
+			    exo_socket:setopts(S, [{packet,http},
+						   {mode,binary}]),
 			    {ok,list_to_binary(reverse(Acc))};
 			Error -> 
 			    Error
@@ -663,7 +672,6 @@ recv_chunk_trailer(S, Acc, Timeout) ->
 	{ok,{http_header,_,K,_,V}} ->
 	    recv_chunk_trailer(S,[{K,V}|Acc],Timeout);
 	{ok,http_eoh} ->
-	    exo_socket:setopts(S, [{packet,http}]),
 	    {ok, reverse(Acc)};
 	Error ->
 	    Error
