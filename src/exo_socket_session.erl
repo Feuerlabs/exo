@@ -24,7 +24,8 @@
 	  args,
 	  socket,
 	  active,
-	  state
+	  state,
+	  pending = []
 	 }).
 
 -include("exo_socket.hrl").
@@ -95,9 +96,17 @@ init([XSocket, Module, Args]) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_call(_Request, _From, State) ->
-    Reply = ok,
-    {reply, Reply, State}.
+handle_call({C, Msg}, From, #state{socket = S, pending = P} = State) when
+      C == call; C == cast ->
+    if P == [] ->
+	    exo_socket:send(S, Msg);
+       true ->
+	    ok
+    end,
+    {noreply, State#state{pending = [{From,Msg}|P]}};
+handle_call(_, _, State) ->
+    {reply, {error, unknown_call}, State}.
+
 
 %%--------------------------------------------------------------------
 %% @private
@@ -138,6 +147,18 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+handle_info({Tag,Socket,<<"reuse%", Rest/binary>>}, State) when
+      (Tag =:= tcp orelse Tag =:= ssl orelse Tag =:= http), 
+      Socket =:= (State#state.socket)#exo_socket.socket ->
+    Config = parse_reuse_config(Rest),
+    {ok, {Host,_}} = exo_socket:peername(State#state.socket),
+    get_parent(State) ! {self(), reuse, [{host, Host}|Config]},
+    if State#state.active == once ->
+	    exo_socket:setopts(State#state.socket, [{active,once}]);
+       true ->
+	    ok
+    end,
+    {noreply, State};
 handle_info({Tag,Socket,Data}, State) when 
       %% FIXME: put socket tag in State for correct matching
       (Tag =:= tcp orelse Tag =:= ssl orelse Tag =:= http), 
@@ -158,7 +179,22 @@ handle_info({Tag,Socket,Data}, State) when
 	    {noreply, State#state { state = CSt1 }};
 
 	{stop,Reason,CSt1} ->
-	    {stop, Reason, State#state { state = CSt1 }}
+	    {stop, Reason, State#state { state = CSt1 }};
+	{reply, Rep, CSt1} ->
+	    if State#state.active == once ->
+		    exo_socket:setopts(State#state.socket, [{active,once}]);
+	       true ->
+		    ok
+	    end,
+	    case State#state.pending of
+		[{From,_}|Rest] ->
+		    gen_server:reply(From, Rep),
+		    send_next(Rest, State#state.socket),
+		    {noreply, State#state { pending = Rest, state = CSt1 }};
+		[] ->
+		    %% huh?
+		    {noreply, State#state { state = CSt1 }}
+	    end
     end;
 handle_info({Tag,Socket}, State) when
       (Tag =:= tcp_closed orelse Tag =:= ssl_closed),
@@ -215,3 +251,22 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
+send_next([{_From, Msg}|_], Socket) ->
+    exo_socket:send(Socket, Msg);
+send_next([], _) ->
+    ok.
+
+get_parent(_) ->
+    hd(get('$ancestors')).
+
+parse_reuse_config(Bin) ->
+    Items = re:split(Bin, "%", [{return, list}]),
+    lists:map(
+      fun(I) ->
+	      case re:split(I, ":", [{return, list}]) of
+		  ["host", Host] ->
+		      {host, Host};
+		  ["port", P] ->
+		      {port, list_to_integer(P)}
+	      end
+      end, Items).
