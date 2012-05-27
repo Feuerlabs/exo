@@ -115,7 +115,8 @@ reusable_sessions(P) ->
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
-init([Port,Protos,Options,Module,Args]) ->
+init([Port,Protos,Options,Module,Args] = _X) ->
+    io:fwrite("~p: init(~p)~n", [?MODULE, _X]),
     Active = proplists:get_value(active, Options, true),
     ReuseMode = proplists:get_value(reuse_mode, Options, none),
     Options1 = proplists:delete(reuse_mode, proplists:delete(active, Options)),
@@ -227,7 +228,7 @@ handle_info({inet_async, LSocket, Ref, {ok,Socket}}, State) when
       Ref =:= State#state.ref ->
     Listen = State#state.listen,
     NewAccept = exo_socket:async_accept(Listen),
-    case exo_socket:async_socket(Listen, Socket) of
+    case exo_socket:async_socket(Listen, Socket, [delay_auth]) of
 	{ok, XSocket} ->
 	    case exo_socket_session:start(XSocket,
 					  State#state.module,
@@ -238,8 +239,8 @@ handle_info({inet_async, LSocket, Ref, {ok,Socket}}, State) when
 		_Error ->
 		    exo_socket:close(XSocket)
 	    end;
-	_Error ->
-	    error
+    	_Error ->
+    	    error
     end,
     case NewAccept of
 	{ok,Ref1} ->

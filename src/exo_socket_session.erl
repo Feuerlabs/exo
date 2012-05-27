@@ -52,7 +52,7 @@
 			{ok, pid()} | ignore | {error, Error::term()}.
 
 start_link(XSocket,Module,Args) ->
-    gen_server:start_link(?MODULE, [XSocket,Module,Args], []).
+    gen_server:start_link(?MODULE, [XSocket,Module,Args, []], []).
 
 -spec start(Socket::exo_socket(), Module::atom(), Args::[term()]) ->
 		   {ok, pid()} | ignore | {error, Error::term()}.
@@ -80,7 +80,7 @@ init([XSocket, Module, Args]) ->
     {ok, #state{ socket=XSocket,
 		 module=Module,
 		 args=Args,
-		 state=undefined }}.
+		 state=undefined}}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -118,7 +118,9 @@ handle_call(_, _, State) ->
 %%                                  {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_cast({activate,Active}, State) ->
+handle_cast({activate,Active}, State0) ->
+    {ok, S} = exo_socket:authenticate(State0#state.socket),
+    State = State0#state{socket = S},
     case apply(State#state.module, init, [State#state.socket,State#state.args]) of
 	{ok,CSt0} ->
 	    %% enable active mode here (if ever wanted) once is handled,
@@ -147,54 +149,32 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_info({Tag,Socket,<<"reuse%", Rest/binary>>}, State) when
-      (Tag =:= tcp orelse Tag =:= ssl orelse Tag =:= http), 
-      Socket =:= (State#state.socket)#exo_socket.socket ->
-    Config = parse_reuse_config(Rest),
-    {ok, {Host,_}} = exo_socket:peername(State#state.socket),
-    get_parent(State) ! {self(), reuse, [{host, Host}|Config]},
-    if State#state.active == once ->
-	    exo_socket:setopts(State#state.socket, [{active,once}]);
-       true ->
-	    ok
-    end,
-    {noreply, State};
-handle_info({Tag,Socket,Data}, State) when 
+%% handle_info({Tag,Socket,<<"reuse%", Rest/binary>>}, State) when
+%%       (Tag =:= tcp orelse Tag =:= ssl orelse Tag =:= http), 
+%%       Socket =:= (State#state.socket)#exo_socket.socket ->
+%%     Config = parse_reuse_config(Rest),
+%%     {ok, {Host,_}} = exo_socket:peername(State#state.socket),
+%%     get_parent(State) ! {self(), reuse, [{host, Host}|Config]},
+%%     if State#state.active == once ->
+%% 	    exo_socket:setopts(State#state.socket, [{active,once}]);
+%%        true ->
+%% 	    ok
+%%     end,
+%%     {noreply, State};
+handle_info({Tag,Socket,Data0}, State) when 
       %% FIXME: put socket tag in State for correct matching
       (Tag =:= tcp orelse Tag =:= ssl orelse Tag =:= http), 
       Socket =:= (State#state.socket)#exo_socket.socket ->
-    ?dbg("exo_socket_session: got ~p\n", [{Tag,Socket,Data}]),
-    CSt0 = State#state.state,
-    case apply(State#state.module, data, [State#state.socket,Data,CSt0]) of
-	{ok,CSt1} ->
-	    if State#state.active == once ->
-		    exo_socket:setopts(State#state.socket, [{active,once}]);
-	       true ->
-		    ok
-	    end,
-	    {noreply, State#state { state = CSt1 }};
-
-	{close, CSt1} ->
-	    exo_socket:shutdown(State#state.socket, write),
-	    {noreply, State#state { state = CSt1 }};
-
-	{stop,Reason,CSt1} ->
-	    {stop, Reason, State#state { state = CSt1 }};
-	{reply, Rep, CSt1} ->
-	    if State#state.active == once ->
-		    exo_socket:setopts(State#state.socket, [{active,once}]);
-	       true ->
-		    ok
-	    end,
-	    case State#state.pending of
-		[{From,_}|Rest] ->
-		    gen_server:reply(From, Rep),
-		    send_next(Rest, State#state.socket),
-		    {noreply, State#state { pending = Rest, state = CSt1 }};
-		[] ->
-		    %% huh?
-		    {noreply, State#state { state = CSt1 }}
-	    end
+    ?dbg("exo_socket_session: got ~p\n", [{Tag,Socket,Data0}]),
+    try exo_socket:auth_incoming(State#state.socket, Data0) of
+	<<"reuse%", Rest/binary>> ->
+	    handle_reuse_data(Rest, State);
+	Data ->
+	    handle_socket_data(Data, State)
+    catch
+	error:_ ->
+	    exo_socket:shutdown(State#state.socket, read_write),
+	    {noreply, State}
     end;
 handle_info({Tag,Socket}, State) when
       (Tag =:= tcp_closed orelse Tag =:= ssl_closed),
@@ -250,6 +230,53 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+
+%% continued from handle_info/2
+handle_reuse_data(Rest, State) ->
+    Config = parse_reuse_config(Rest),
+    {ok, {Host,_}} = exo_socket:peername(State#state.socket),
+    get_parent(State) ! {self(), reuse, [{host, Host}|Config]},
+    if State#state.active == once ->
+	    exo_socket:setopts(State#state.socket, [{active,once}]);
+       true ->
+	    ok
+    end,
+    {noreply, State}.
+
+handle_socket_data(Data, State) ->
+    CSt0 = State#state.state,
+    case apply(State#state.module, data, [State#state.socket,Data,CSt0]) of
+	{ok,CSt1} ->
+	    if State#state.active == once ->
+		    exo_socket:setopts(State#state.socket, [{active,once}]);
+	       true ->
+		    ok
+	    end,
+	    {noreply, State#state { state = CSt1 }};
+
+	{close, CSt1} ->
+	    exo_socket:shutdown(State#state.socket, write),
+	    {noreply, State#state { state = CSt1 }};
+
+	{stop,Reason,CSt1} ->
+	    {stop, Reason, State#state { state = CSt1 }};
+	{reply, Rep, CSt1} ->
+	    if State#state.active == once ->
+		    exo_socket:setopts(State#state.socket, [{active,once}]);
+	       true ->
+		    ok
+	    end,
+	    case State#state.pending of
+		[{From,_}|Rest] ->
+		    gen_server:reply(From, Rep),
+		    send_next(Rest, State#state.socket),
+		    {noreply, State#state { pending = Rest, state = CSt1 }};
+		[] ->
+		    %% huh?
+		    {noreply, State#state { state = CSt1 }}
+	    end
+    end.
+
 
 send_next([{_From, Msg}|_], Socket) ->
     exo_socket:send(Socket, Msg);
