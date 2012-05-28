@@ -40,6 +40,8 @@
 -export([behaviour_info/1]).
 
 -include("exo_socket.hrl").
+-define(debug(Fmt,Args), ok).
+-define(error(Fmt,Args), error_logger:format(Fmt, Args)).
 
 -define(SERVER, ?MODULE). 
 
@@ -116,7 +118,7 @@ reusable_sessions(P) ->
 %% @end
 %%--------------------------------------------------------------------
 init([Port,Protos,Options,Module,Args] = _X) ->
-    io:fwrite("~p: init(~p)~n", [?MODULE, _X]),
+    ?debug("~p: init(~p)~n", [?MODULE, _X]),
     Active = proplists:get_value(active, Options, true),
     ReuseMode = proplists:get_value(reuse_mode, Options, none),
     Options1 = proplists:delete(reuse_mode, proplists:delete(active, Options)),
@@ -280,7 +282,7 @@ handle_info({Pid, reuse, Config},
 	    R1 = R#reuse{sessions = Sessions1, session_pids = Pids1},
 	    {noreply, State#state{socket_reuse = R1}};
 	_Other ->
-	    io:fwrite("strange reuse config: ~p~n", [_Other]),
+	    ?error("strange reuse config: ~p~n", [_Other]),
 	    {noreply, State}
     end;
 handle_info({'DOWN', _, process, Pid, _},
