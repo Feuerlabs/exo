@@ -40,8 +40,10 @@
 -export([behaviour_info/1]).
 
 -include("exo_socket.hrl").
--define(debug(Fmt,Args), ok).
--define(error(Fmt,Args), error_logger:format(Fmt, Args)).
+-include_lib("lager/include/log.hrl").
+
+%% -define(debug(Fmt,Args), ok).
+%% -define(error(Fmt,Args), error_logger:format(Fmt, Args)).
 
 -define(SERVER, ?MODULE). 
 
@@ -225,9 +227,10 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_info({inet_async, LSocket, Ref, {ok,Socket}}, State) when 
+handle_info({inet_async, LSocket, Ref, {ok,Socket}} = _Msg, State) when 
       (State#state.listen)#exo_socket.socket =:= LSocket,
       Ref =:= State#state.ref ->
+    ?debug("<-- ~p~n", [_Msg]),
     Listen = State#state.listen,
     NewAccept = exo_socket:async_accept(Listen),
     case exo_socket:async_socket(Listen, Socket, [delay_auth]) of
@@ -333,7 +336,8 @@ code_change(_OldVsn, State, _Extra) ->
 
 start_connector(Host, Port, ConnArgs, Parent,
 		#state{module = M, args = Args, active = Active,
-		       socket_reuse = #reuse{port = MyPort}}) ->
+		       socket_reuse = #reuse{port = MyPort,
+					     state = RUSt}}) ->
     Pid =
 	proc_lib:spawn(
 	  fun() ->
@@ -345,8 +349,10 @@ start_connector(Host, Port, ConnArgs, Parent,
 			  [Protos, Opts] ->
 			      exo_socket:connect(Host, Port, Protos, Opts)
 		      end,
-		  exo_socket:send(
-		    XSocket, <<"reuse%port:", (to_bin(MyPort))/binary>>),
+		  ReuseOpts = M:reuse_options(Host, Port, Args, RUSt),
+		  ReuseMsg = exo_socket_session:encode_reuse(
+			       MyPort, ReuseOpts),
+		  exo_socket:send(XSocket, ReuseMsg),
 		  {ok, XSt} = exo_socket_session:init([XSocket, M, Args]),
 		  {noreply, XSt1} = exo_socket_session:handle_cast(
 				      {activate, Active}, XSt),
@@ -356,9 +362,3 @@ start_connector(Host, Port, ConnArgs, Parent,
     erlang:monitor(process, Pid),
     Pid.
 
-to_bin(I) when is_integer(I) ->
-    list_to_binary(integer_to_list(I));
-to_bin(B) when is_binary(B) ->
-    B;
-to_bin(L) when is_list(L) ->
-    list_to_binary(L).

@@ -24,14 +24,14 @@
 -export([auth_incoming/2, authenticate/1]).
 
 -include("exo_socket.hrl").
+-include_lib("lager/include/log.hrl").
 
-
-
--ifdef(debug).
--define(dbg(F, A), io:format((F), (A))).
--else.
--define(dbg(F, A), ok).
--endif.
+-define(dbg(F, A), ?debug("~p " ++ F, [self()|A])).
+%% -ifdef(debug).
+%% -define(dbg(F, A), io:format((F), (A))).
+%% -else.
+%% -define(dbg(F, A), ok).
+%% -endif.
 
 %%
 %% List of protocols supported
@@ -120,19 +120,31 @@ connect(Host, Port, Protos=[tcp|_], Opts0, Timeout) ->
 maybe_auth(X, Opts) ->
     maybe_auth(X, undefined, Opts).
 
-maybe_auth({ok, X}, Role0, Opts) ->
-    Role = proplists:get_value(role, Opts, Role0),
+maybe_auth(X, Role, Opts) ->
+    case proplists:get_bool(delay_auth, Opts) of
+	true ->
+	    ?dbg("Delaying authentication~n", []),
+	    X;
+	false ->
+	    maybe_auth_(X, Role, Opts)
+    end.
+
+maybe_auth_({ok,X}, Role0, Opts) ->
     case proplists:get_value(auth, Opts, false) of
 	false ->
 	    {ok, X};
 	L when is_list(L) ->
+	    Role = proplists:get_value(role, L, Role0),
+	    ?dbg("auth opts = ~p~nRole = ~p~n", [L, Role]),
 	    %% Here, we should check if the session is already authenticated
 	    %% Otherwise, initiate user-level authentication.
 	    case lists:keyfind(Role, 1, L) of
 		false -> {ok, X};
 		{_, ROpts} ->
+		    ?dbg("ROpts = ~p~n", [ROpts]),
 		    case lists:keyfind(mod, 1, ROpts) of
 			{_, M} ->
+			    ?dbg("will authenticate (M = ~p~n", [M]),
 			    try preserve_active(
 				  fun() ->
 					  M:authenticate(X, Role, ROpts)
@@ -142,9 +154,16 @@ maybe_auth({ok, X}, Role0, Opts) ->
 						      auth_state = Info}};
 				error ->
 				    shutdown(X, write),
-				    {error, einval}
+				    {error, einval};
+				Other ->
+				    ?error("authenticate returned ~p~n",
+					   [Other]),
+				    {error, Other}
 			    catch
-				error:_ ->
+				error:Err ->
+				    ?dbg("Caught error: ~p~n"
+					 "Trace = ~p~n",
+					 [Err, erlang:get_stacktrace()]),
 				    shutdown(X, write),
 				    {error, einval}
 			    end;
@@ -162,8 +181,10 @@ preserve_active(F, S) ->
     Res.
 
 authenticate(#exo_socket{mauth = undefined} = XS) ->
+    ?dbg("authenticate(~p)~n", [XS]),
     maybe_auth({ok,XS}, XS#exo_socket.opts);
 authenticate(#exo_socket{} = XS) ->
+    ?dbg("No authentication options defined.~n", []),
     {ok, XS}.
 
 auth_incoming(#exo_socket{mauth = undefined}, Data) ->
@@ -172,7 +193,7 @@ auth_incoming(#exo_socket{mauth = M, auth_state = Sa} = X, Data) ->
     try M:incoming(Data, Sa)
     catch
 	error:E ->
-	    shutdown(X, read_write),
+	    shutdown(X, write),
 	    error(E)
     end.
 
@@ -405,7 +426,7 @@ send(#exo_socket { mdata = M,socket = S, mauth = A,auth_state = Sa} = X, Data) -
 	    try M:send(S, A:outgoing(Data, Sa))
 	    catch
 		error:_ ->
-		    shutdown(X, read_write)
+		    shutdown(X, write)
 	    end
     end.
 
@@ -420,7 +441,7 @@ recv(#exo_socket { mdata = M, socket = S,
 	    try A:incoming(M:recv(S, Size, Timeout), Sa)
 	    catch
 		error:E ->
-		    shutdown(X, read_write),
+		    shutdown(X, write),
 		    error(E)
 	    end
     end.
