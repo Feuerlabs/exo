@@ -170,17 +170,21 @@ handle_call({get_session, Host, Port, Opts}, From,
     case Reuse of
 	none ->
 	    {reply, connect, State};
-	#reuse{mode = client, sessions = Sessions} = R ->
+	#reuse{mode = client, sessions = Sessions,
+	       session_pids = Pids} = R ->
 	    case dict:find(Key, Sessions) of
 		error ->
-		    Ref = start_connector(Host, Port, Opts, self(), State),
-		    Sessions1 = dict:store(Key, {Ref, [From]}, Sessions),
-		    R1 = R#reuse{sessions = Sessions1},
+		    ConnPid = start_connector(Host, Port, Opts, self(), State),
+		    Sessions1 = dict:store(Key, {ConnPid, [From]}, Sessions),
+		    Pids1 = dict:store(ConnPid, Key, Pids),
+		    R1 = R#reuse{sessions = Sessions1,
+				 session_pids = Pids1},
 		    {noreply, State#state{socket_reuse = R1}};
 		{ok, Pid} when is_pid(Pid) ->
 		    {reply, Pid, State};
-		{ok, {Ref, Pending}} ->
-		    Sessions1 = dict:store(Key, {Ref, [From|Pending]}, Sessions),
+		{ok, {CPid, Pending}} ->
+		    Sessions1 = dict:store(
+				  Key, {CPid, [From|Pending]}, Sessions),
 		    R1 = R#reuse{sessions = Sessions1},
 		    {noreply, State#state{socket_reuse = R1}}
 	    end;
@@ -268,8 +272,8 @@ handle_info({Pid, ?MODULE, connected, Host, Port},
     {_, Pending} = dict:fetch(Key = {Host, Port}, Sessions),
     [gen_server:reply(From, Pid) || From <- Pending],
     Sessions1 = dict:store(Key, Pid, Sessions),
-    Pids = dict:store(Pid, {Host,Port}, R#reuse.session_pids),
-    R1 = R#reuse{sessions = Sessions1, session_pids = Pids},
+    %% Pids = dict:store(Pid, {Host,Port}, R#reuse.session_pids),
+    R1 = R#reuse{sessions = Sessions1},
     {noreply, State#state{socket_reuse = R1}};
 handle_info({Pid, reuse, Config},
 	    #state{socket_reuse = #reuse{mode = server,
@@ -291,10 +295,16 @@ handle_info({Pid, reuse, Config},
 handle_info({'DOWN', _, process, Pid, _},
 	    #state{socket_reuse = #reuse{sessions = Sessions,
 					 session_pids = Pids} = R} = State) ->
+    ?debug("~p got DOWN - Pid = ~p~n"
+	   "Sessions = ~p~n"
+	   "Pids = ~p~n", [?MODULE, Pid, dict:to_list(Sessions),
+			   dict:to_list(Pids)]),
     case dict:find(Pid, Pids) of
 	error ->
 	    {noreply, State};
-	{_Host,_Port} = Key ->
+	{ok, {_Host,_Port} = Key} ->
+	    {_, Pending} = dict:fetch(Key, Sessions),
+	    [gen_server:reply(From, rejected) || From <- Pending],
 	    Sessions1 = dict:erase(Key, Sessions),
 	    Pids1 = dict:erase(Pid, Pids),
 	    R1 = R#reuse{sessions = Sessions1, session_pids = Pids1},
@@ -338,27 +348,44 @@ start_connector(Host, Port, ConnArgs, Parent,
 		#state{module = M, args = Args, active = Active,
 		       socket_reuse = #reuse{port = MyPort,
 					     state = RUSt}}) ->
-    Pid =
-	proc_lib:spawn(
-	  fun() ->
-		  {ok, XSocket} =
-		      case ConnArgs of
-			  [Protos, Opts, Timeout] ->
-			      exo_socket:connect(
-				Host, Port, Protos, Opts, Timeout);
-			  [Protos, Opts] ->
-			      exo_socket:connect(Host, Port, Protos, Opts)
-		      end,
-		  ReuseOpts = M:reuse_options(Host, Port, Args, RUSt),
-		  ReuseMsg = exo_socket_session:encode_reuse(
-			       MyPort, ReuseOpts),
-		  exo_socket:send(XSocket, ReuseMsg),
-		  {ok, XSt} = exo_socket_session:init([XSocket, M, Args]),
-		  {noreply, XSt1} = exo_socket_session:handle_cast(
+    F = fun() ->
+		case open_reuse_connector(Host, Port, ConnArgs) of
+		    {ok, XSocket} ->
+			send_reuse_message(
+			  Host, Port, Args, M, MyPort, XSocket, RUSt),
+			case exo_socket_session:init(
+			       [XSocket, M, Args]) of
+			    {ok, XSt} ->
+				{noreply, XSt1} =
+				    exo_socket_session:handle_cast(
 				      {activate, Active}, XSt),
-		  Parent ! {self(), ?MODULE, connected, Host, Port},
-		  gen_server:enter_loop(exo_socket_session, [], XSt1)
-	  end),
+				Parent ! {self(), ?MODULE, connected,
+					  Host, Port},
+				gen_server:enter_loop(
+				  exo_socket_session, [], XSt1);
+			    {error, InitError} ->
+				exit({InitError, [{exo_socket_session,init}]})
+			end;
+		    {error, ConnectError} ->
+			exit({ConnectError, [{exo_socket, connect}]})
+		end
+	end,
+    Pid = proc_lib:spawn(F),
     erlang:monitor(process, Pid),
     Pid.
+
+open_reuse_connector(Host, Port, ConnArgs) ->
+    case ConnArgs of
+	[Protos, Opts, Timeout] ->
+	    exo_socket:connect(
+	      Host, Port, Protos, Opts, Timeout);
+	[Protos, Opts] ->
+	    exo_socket:connect(Host, Port, Protos, Opts)
+    end.
+
+send_reuse_message(Host, Port, Args, M, MyPort, XSocket, RUSt) ->
+    ReuseOpts = M:reuse_options(Host, Port, Args, RUSt),
+    ReuseMsg = exo_socket_session:encode_reuse(
+		 MyPort, ReuseOpts),
+    exo_socket:send(XSocket, ReuseMsg).
 
