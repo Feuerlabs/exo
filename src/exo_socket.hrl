@@ -20,7 +20,9 @@
 	  mode=list,    %% :: list|binary 
 	  packet=0,     %% packet mode
 	  opts = [],    %% extra options
-	  tags = {data,close,error}  %% data tags used
+	  tags = {data,close,error},  %% data tags used
+	  mauth,        %% user-provided auth module - if any
+	  auth_state    %% state for user-provided auth module.
 	}).
 
 -endif.

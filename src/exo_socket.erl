@@ -13,7 +13,7 @@
 -export([async_accept/1, async_accept/2]).
 -export([connect/2, connect/3, connect/4, connect/5]).
 %% -export([async_connect/2, async_connect/3, async_connect/4]).
--export([async_socket/2]).
+-export([async_socket/2, async_socket/3]).
 -export([close/1, shutdown/2]).
 -export([send/2, recv/2, recv/3]).
 -export([getopts/2, setopts/2, sockname/1, peername/1]).
@@ -21,16 +21,17 @@
 -export([pair/0]).
 -export([stats/0, getstat/2]).
 -export([tags/1, socket/1]).
+-export([auth_incoming/2, authenticate/1]).
 
 -include("exo_socket.hrl").
+-include_lib("lager/include/log.hrl").
 
-
-
--ifdef(debug).
--define(dbg(F, A), io:format((F), (A))).
--else.
--define(dbg(F, A), ok).
--endif.
+-define(dbg(F, A), ?debug("~p " ++ F, [self()|A])).
+%% -ifdef(debug).
+%% -define(dbg(F, A), io:format((F), (A))).
+%% -else.
+%% -define(dbg(F, A), ok).
+%% -endif.
 
 %%
 %% List of protocols supported
@@ -111,10 +112,91 @@ connect(Host, Port, Protos=[tcp|_], Opts0, Timeout) ->
 			      opts     = Opts2,
 			      tags     = {tcp,tcp_closed,tcp_error}
 			    },
-	    connect_upgrade(X, tl(Protos), Timeout);
+	    maybe_auth(connect_upgrade(X, tl(Protos), Timeout), client, Opts2);
 	Error ->
 	    Error
     end.
+
+maybe_auth(X, Opts) ->
+    maybe_auth(X, undefined, Opts).
+
+maybe_auth(X, Role, Opts) ->
+    case proplists:get_bool(delay_auth, Opts) of
+	true ->
+	    ?dbg("Delaying authentication~n", []),
+	    X;
+	false ->
+	    maybe_auth_(X, Role, Opts)
+    end.
+
+maybe_auth_({ok,X}, Role0, Opts) ->
+    case proplists:get_value(auth, Opts, false) of
+	false ->
+	    {ok, X};
+	L when is_list(L) ->
+	    Role = proplists:get_value(role, L, Role0),
+	    ?dbg("auth opts = ~p~nRole = ~p~n", [L, Role]),
+	    %% Here, we should check if the session is already authenticated
+	    %% Otherwise, initiate user-level authentication.
+	    case lists:keyfind(Role, 1, L) of
+		false -> {ok, X};
+		{_, ROpts} ->
+		    ?dbg("ROpts = ~p~n", [ROpts]),
+		    case lists:keyfind(mod, 1, ROpts) of
+			{_, M} ->
+			    ?dbg("will authenticate (M = ~p~n", [M]),
+			    try preserve_active(
+				  fun() ->
+					  M:authenticate(X, Role, ROpts)
+				  end, X) of
+				{ok, Info} ->
+				    {ok, X#exo_socket{mauth = M,
+						      auth_state = Info}};
+				error ->
+				    shutdown(X, write),
+				    {error, einval};
+				Other ->
+				    ?error("authenticate returned ~p~n",
+					   [Other]),
+				    {error, Other}
+			    catch
+				error:Err ->
+				    ?dbg("Caught error: ~p~n"
+					 "Trace = ~p~n",
+					 [Err, erlang:get_stacktrace()]),
+				    shutdown(X, write),
+				    {error, einval}
+			    end;
+			false ->
+			    shutdown(X, write),
+			    {error, einval}
+		    end
+	    end
+    end.
+
+preserve_active(F, S) ->
+    {ok, [{active,A}]} = exo_socket:getopts(S, [active]),
+    Res = F(),
+    exo_socket:setopts(S, [{active,A}]),
+    Res.
+
+authenticate(#exo_socket{mauth = undefined} = XS) ->
+    ?dbg("authenticate(~p)~n", [XS]),
+    maybe_auth({ok,XS}, XS#exo_socket.opts);
+authenticate(#exo_socket{} = XS) ->
+    ?dbg("No authentication options defined.~n", []),
+    {ok, XS}.
+
+auth_incoming(#exo_socket{mauth = undefined}, Data) ->
+    Data;
+auth_incoming(#exo_socket{mauth = M, auth_state = Sa} = X, Data) ->
+    try M:incoming(Data, Sa)
+    catch
+	error:E ->
+	    shutdown(X, write),
+	    error(E)
+    end.
+
 
 connect_upgrade(X, Protos0, Timeout) ->
     ?dbg("exo_socket: connect protos=~w\n", [Protos0]),
@@ -185,7 +267,10 @@ async_accept(X,Timeout) when
 	    {error, proto_not_supported}
     end.
 
-async_socket(Listen, Socket) 
+async_socket(Listen, Socket) ->
+    async_socket(Listen, Socket, []).
+
+async_socket(Listen, Socket, AuthOpts)
   when is_record(Listen, exo_socket), is_port(Socket) ->
     Inherit = [nodelay,keepalive,delay_send,priority,tos],
     case getopts(Listen, Inherit) of
@@ -196,7 +281,10 @@ async_socket(Listen, Socket)
 		    {ok,Mod} = inet_db:lookup_socket(Listen#exo_socket.socket),
 		    inet_db:register_socket(Socket, Mod),
 		    X = Listen#exo_socket { transport=Socket, socket=Socket },
-		    accept_upgrade(X, tl(X#exo_socket.protocol), infinity);
+		    maybe_auth(
+		      accept_upgrade(X, tl(X#exo_socket.protocol), infinity),
+		      server,
+		      X#exo_socket.opts ++ AuthOpts);
 		Error ->
 		    prim_inet:close(Socket),
 		    Error
@@ -331,14 +419,32 @@ close(#exo_socket { mdata = M, socket = S}) ->
 shutdown(#exo_socket { mdata = M, socket = S}, How) ->
     M:shutdown(S, How).
     
-send(#exo_socket { mdata = M, socket = S}, Data) ->
-    M:send(S, Data).
+send(#exo_socket { mdata = M,socket = S, mauth = A,auth_state = Sa} = X, Data) ->
+    if A == undefined ->
+	    M:send(S, Data);
+       true ->
+	    try M:send(S, A:outgoing(Data, Sa))
+	    catch
+		error:_ ->
+		    shutdown(X, write)
+	    end
+    end.
 
 recv(HSocket, Size) ->
     recv(HSocket, Size, infinity).
 
-recv(#exo_socket { mdata = M, socket = S}, Size, Timeout) ->
-    M:recv(S, Size, Timeout).
+recv(#exo_socket { mdata = M, socket = S,
+		   mauth = A, auth_state = Sa} = X, Size, Timeout) ->
+    if A == undefined ->
+	    M:recv(S, Size, Timeout);
+       true ->
+	    try A:incoming(M:recv(S, Size, Timeout), Sa)
+	    catch
+		error:E ->
+		    shutdown(X, write),
+		    error(E)
+	    end
+    end.
 
 setopts(#exo_socket { mctl = M, socket = S}, Opts) ->
     M:setopts(S, Opts).
