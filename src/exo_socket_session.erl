@@ -107,26 +107,45 @@ init([XSocket, Module, Args]) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_call({C, Msg}, From, #state{module = M,
-				   state = MSt,
-				   socket = S, pending = P} = State) when
+handle_call(get_access, From, #state{module = M,
+				     state = MSt} = State) ->
+    mod_reply(M:handle_call(From, get_access, MSt), From, State);
+handle_call({set_access, A}, From, #state{module = M,
+					  state = MSt} = State) ->
+    mod_reply(M:handle_call(From, {set_access, A}, MSt), From, State);
+handle_call({C, Msg}, From, #state{module = M, state = MSt} = State) when
       C == call; C == cast ->
-    case M:handle_call(C, Msg, MSt) of
-	{send, Bin, MSt1} ->
-	    P1 = if P == [] ->
-			 exo_socket:send(S, Bin),
-			 [{From,Bin}|P];
-		    true -> P
-		 end,
-	    {noreply, State#state{pending = P1,
-				  state = MSt1}};
-	{reply, Reply, MSt1} ->
-	    {reply, Reply, State#state{state = MSt1}};
-	{ignore, MSt1} ->
-	    {noreply, State#state{state = MSt1}}
-    end;
+    mod_reply(M:handle_call(C, Msg, MSt), From, State);
+    %% case M:handle_call(C, Msg, MSt) of
+    %% 	{send, Bin, MSt1} ->
+    %% 	    P1 = if P == [] ->
+    %% 			 exo_socket:send(S, Bin),
+    %% 			 [{From,Bin}|P];
+    %% 		    true -> P
+    %% 		 end,
+    %% 	    {noreply, State#state{pending = P1,
+    %% 				  state = MSt1}};
+    %% 	{reply, Reply, MSt1} ->
+    %% 	    {reply, Reply, State#state{state = MSt1}};
+    %% 	{ignore, MSt1} ->
+    %% 	    {noreply, State#state{state = MSt1}}
+    %% end;
 handle_call(_, _, State) ->
     {reply, {error, unknown_call}, State}.
+
+
+mod_reply({ignore, MSt}, _, State) ->
+    {noreply, State#state{state = MSt}};
+mod_reply({reply, Reply, MSt}, _, State) ->
+    {reply, Reply, State#state{state = MSt}};
+mod_reply({send, Bin, MSt}, From, #state{socket = S, pending = P} = State) ->
+    P1 = if P == [] ->
+		 exo_socket:send(S, Bin),
+		 [{From,Bin}|P];
+	    true -> P
+	 end,
+    {noreply, State#state{pending = P1, state = MSt}}.
+
 
 
 %%--------------------------------------------------------------------
