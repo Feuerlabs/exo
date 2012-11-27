@@ -266,7 +266,7 @@ handle_info({inet_async, LSocket, Ref, {ok,Socket}} = _Msg, State) when
 	    {stop, Reason, State}
     end;
 %% handle {ok,Socket} on bad ref ?
-handle_info({inet_async, _LSocket, Ref, {error,Reason}}, State) when 
+handle_info({inet_async, _LSocket, Ref, {error,Reason}}, State) when
       Ref =:= State#state.ref ->
     case exo_socket:async_accept(State#state.listen) of
 	{ok,Ref} ->
@@ -277,8 +277,12 @@ handle_info({inet_async, _LSocket, Ref, {error,Reason}}, State) when
     end;
 handle_info({Pid, ?MODULE, connected, Host, Port},
 	    #state{socket_reuse = #reuse{sessions = Sessions} = R} = State) ->
-    {_, Pending} = dict:fetch(Key = {Host, Port}, Sessions),
-    [gen_server:reply(From, Pid) || From <- Pending],
+    Session = dict:fetch(Key = {Host, Port}, Sessions),
+    case Session of
+	{_, Pending} ->
+	    [gen_server:reply(From, Pid) || From <- Pending];
+	_ -> ok
+    end,
     Sessions1 = dict:store(Key, Pid, Sessions),
     %% Pids = dict:store(Pid, {Host,Port}, R#reuse.session_pids),
     R1 = R#reuse{sessions = Sessions1},
@@ -311,8 +315,12 @@ handle_info({'DOWN', _, process, Pid, _},
 	error ->
 	    {noreply, State};
 	{ok, {_Host,_Port} = Key} ->
-	    {_, Pending} = dict:fetch(Key, Sessions),
-	    [gen_server:reply(From, rejected) || From <- Pending],
+	    Session = dict:fetch(Key, Sessions),
+	    case Session of
+		{_, Pending} ->
+		    [gen_server:reply(From, rejected) || From <- Pending];
+		_ -> ok
+	    end,
 	    Sessions1 = dict:erase(Key, Sessions),
 	    Pids1 = dict:erase(Pid, Pids),
 	    R1 = R#reuse{sessions = Sessions1, session_pids = Pids1},
