@@ -8,10 +8,12 @@
 %%%
 %%%---- END COPYRIGHT ---------------------------------------------------------
 %%% @author Tony Rogvall <tony@rogvall.se>
+%%% @author Marina Westman Lönne <malotte@malotte.net>
+%%% @copyright (C) 2012, Feuerlabs, Inc. All rights reserved.
 %%% @doc
 %%%   Simple exo_http_server
 %%% @end
-%%% Created : 26 Apr 2010 by Tony Rogvall <tony@rogvall.se>
+%%% Created : 2010 by Tony Rogvall <tony@rogvall.se>
 
 -module(exo_http_server).
 
@@ -19,42 +21,49 @@
 
 -behaviour(exo_socket_server).
 
--export([init/2, data/3, close/2, error/3]).
+%% exo_socket_server callbacks
+-export([init/2, 
+	 data/3, 
+	 close/2, 
+	 error/3]).
 
--include("../include/exo_http.hrl").
+-include_lib("lager/include/log.hrl").
+-include("exo_http.hrl").
 
 -record(state,
 	{
 	  request,
 	  response,
-	  access = []
+	  access = [],
+	  module
 	}).
 
--ifdef(debug).
--define(dbg(F, A), io:format((F), (A))).
--else.
--define(dbg(F, A), ok).
--endif.
+%% Configurable start
+-export([start/2]).
 
+%% For testing
 -export([test/0]).
 
-test() ->
+start(Port, Options) ->
+    ?debug("exo_http_server: start: port ~p, options ~p",[Port, Options]),
     Dir = code:priv_dir(exo),
-    exo_socket_server:start(9000, [tcp,probe_ssl,http],
+    exo_socket_server:start(Port, [tcp,probe_ssl,http],
 			    [{active,once},{reuseaddr,true},
 			     {verify, verify_none},
 			     {keyfile, filename:join(Dir, "host.key")},
 			     {certfile, filename:join(Dir, "host.cert")}],
-			    ?MODULE, []).
+			    ?MODULE, Options).
 
 init(Socket, Options) ->
     {ok,{_IP,_Port}} = exo_socket:peername(Socket),
-    ?dbg("exo_http_server: connection from: ~p : ~p\n",[_IP, _Port]),
+    ?debug("exo_http_server: connection from: ~p : ~p,\n options ~p",
+	   [_IP, _Port, Options]),
     Access = proplists:get_value(access, Options, []),
-    {ok, #state{ access=Access}}.    
+    Module = proplists:get_value(request_module, Options, ?MODULE),
+    {ok, #state{ access = Access, module = Module}}.    
 
 data(Socket, Data, State) ->
-    ?dbg("exo_http_server:~w: data = ~w\n", [self(),Data]),
+    ?debug("exo_http_server:~w: data = ~w\n", [self(),Data]),
     case Data of
 	{http_request, Method, Uri, Version} ->
 	    CUri = exo_http:convert_uri(Uri),
@@ -70,49 +79,61 @@ data(Socket, Data, State) ->
 	{http_error, ?NL} ->
 	    {ok, State};
 	_ when is_list(Data); is_binary(Data) ->
-	    ?dbg("Request data: ~p\n", [Data]),
+	    ?debug("exo_http_server: request data: ~p\n", [Data]),
 	    {stop, {error,sync_error}, State};
 	Error ->
 	    {stop, Error, State}
     end.
 
 close(_Socket, State) ->
-    ?dbg("exo_http_server: close\n", []),
+    ?debug("exo_http_server: close\n", []),
     {ok,State}.
 
 error(_Socket,Error,State) ->
-    ?dbg("exo_http_serber: error = ~p\n", [Error]),
+    ?debug("exo_http_serber: error = ~p\n", [Error]),
     {stop, Error, State}.    
 
 
 handle_request(Socket, R, State) ->
-    ?dbg("exo_http_server: request = ~s\n", 
+    ?debug("exo_http_server: request = ~s\n", 
 	 [[exo_http:format_request(R),?CRNL,
 	   exo_http:format_hdr(R#http_request.headers),
 	   ?CRNL]]),
     case exo_http:recv_body(Socket, R) of
-	{ok, _Body} ->
-	    U = R#http_request.uri,
-	    ?dbg("-BODY:\n~s\n-END-BODY\n", [_Body]),
-	    if R#http_request.method == 'GET',
-	       U#url.path == "/quit" ->
-		    response(Socket, "close", 200, "OK", "QUIT"),
-		    exo_socket:shutdown(Socket, write),
-		    {stop, normal, State};
-	       U#url.path == "/test" ->
-		    response(Socket, undefined, 200, "OK", "OK"),
-		    {ok, State};
-	       true ->
-		    response(Socket, undefined, 404, "Not Found", 
-			     "Object not found"),
-		    {ok, State}
-	    end;
+	{ok, Body} ->
+	    handle_body(Socket, R, Body, State);
 	{error, closed} ->
 	    {stop, normal,State};
 	Error ->
 	    {stop, Error, State}
     end.
 	    
+handle_body(Socket, Request, Body, State=#state {module = Module}) 
+  when Module =/= ?MODULE ->
+    ?debug("exo_http_server: calling ~p with -BODY:\n~s\n-END-BODY\n", 
+	   [Module, Body]),
+    case apply(Module, handle_request, [Socket, Request, Body]) of
+	ok -> {ok, State};
+	stop -> {stop, normal, State};
+	{error, Error} ->  {stop, Error, State}
+    end;
+handle_body(Socket, Request, Body, State) ->
+    Url = Request#http_request.uri,
+    ?debug("exo_http_server: -BODY:\n~s\n-END-BODY\n", [Body]),
+    if Request#http_request.method == 'GET',
+       Url#url.path == "/quit" ->
+	    response(Socket, "close", 200, "OK", "QUIT"),
+	    exo_socket:shutdown(Socket, write),
+	    {stop, normal, State};
+       Url#url.path == "/test" ->
+	    response(Socket, undefined, 200, "OK", "OK"),
+	    {ok, State};
+       true ->
+	    response(Socket, undefined, 404, "Not Found", 
+		     "Object not found"),
+	    {ok, State}
+    end.
+
 response(S, Connection, Status, Phrase, String) ->
     H = #http_shdr { connection = Connection,
 		     content_length = length(String),
@@ -126,5 +147,16 @@ response(S, Connection, Status, Phrase, String) ->
 		exo_http:format_hdr(H),
 		?CRNL,
 		String],
-    ?dbg("Response:\n~s\n", [Response]),
+    ?debug("exo_http_server: response:\n~s\n", [Response]),
     exo_socket:send(S, Response).
+
+
+test() ->
+    Dir = code:priv_dir(exo),
+    exo_socket_server:start(9000, [tcp,probe_ssl,http],
+			    [{active,once},{reuseaddr,true},
+			     {verify, verify_none},
+			     {keyfile, filename:join(Dir, "host.key")},
+			     {certfile, filename:join(Dir, "host.cert")}],
+			    ?MODULE, []).
+
