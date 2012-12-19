@@ -88,7 +88,7 @@ init(Socket, Options) ->
 
 %%-----------------------------------------------------------------------------
 %% @doc
-%%  Init function called when a connection is established.
+%%  Data function called when data is received.
 %%
 %% @end
 %%-----------------------------------------------------------------------------
@@ -123,7 +123,7 @@ data(Socket, Data, State) ->
 
 %%-----------------------------------------------------------------------------
 %% @doc
-%%  Init function called when a connection is established.
+%%  Close function called when a connection is closed.
 %%
 %% @end
 %%-----------------------------------------------------------------------------
@@ -137,7 +137,8 @@ close(_Socket, State) ->
 
 %%-----------------------------------------------------------------------------
 %% @doc
-%%  Init function called when a connection is established.
+%%  Error function called when an error is detected.
+%%  Stops the server.
 %%
 %% @end
 %%-----------------------------------------------------------------------------
