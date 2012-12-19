@@ -17,8 +17,6 @@
 
 -module(exo_http_server).
 
--compile(export_all).
-
 -behaviour(exo_socket_server).
 
 %% exo_socket_server callbacks
@@ -28,6 +26,7 @@
 	 error/3]).
 
 -include_lib("lager/include/log.hrl").
+-include("exo_socket.hrl").
 -include("exo_http.hrl").
 
 -record(state,
@@ -35,32 +34,69 @@
 	  request,
 	  response,
 	  access = [],
-	  module
+	  request_handler
 	}).
 
 %% Configurable start
--export([start/2]).
+-export([start/2,
+	 response/5]).
 
 %% For testing
 -export([test/0]).
 
-start(Port, Options) ->
-    ?debug("exo_http_server: start: port ~p, options ~p",[Port, Options]),
+%%-----------------------------------------------------------------------------
+%% @doc
+%%  Starts a socket server on port Port with server options ServerOpts
+%% that are sent to the server when a connection is established, 
+%% i.e init is called.
+%%
+%% @end
+%%-----------------------------------------------------------------------------
+-spec start(Port::integer(), 
+	    ServerOptions::list({Option::atom(), Value::term()})) -> 
+		   {ok, ChildPid::pid()} |
+		   {error, Reason::term()}.
+
+start(Port, ServerOptions) ->
+    ?debug("exo_http_server: start: port ~p, server options ~p",
+	   [Port, ServerOptions]),
     Dir = code:priv_dir(exo),
     exo_socket_server:start(Port, [tcp,probe_ssl,http],
 			    [{active,once},{reuseaddr,true},
 			     {verify, verify_none},
 			     {keyfile, filename:join(Dir, "host.key")},
 			     {certfile, filename:join(Dir, "host.cert")}],
-			    ?MODULE, Options).
+			    ?MODULE, ServerOptions).
+
+%%-----------------------------------------------------------------------------
+%% @doc
+%%  Init function called when a connection is established.
+%%
+%% @end
+%%-----------------------------------------------------------------------------
+-spec init(Socket::#exo_socket{}, 
+	   ServerOptions::list({Option::atom(), Value::term()})) -> 
+		  {ok, State::#state{}}.
 
 init(Socket, Options) ->
     {ok,{_IP,_Port}} = exo_socket:peername(Socket),
     ?debug("exo_http_server: connection from: ~p : ~p,\n options ~p",
 	   [_IP, _Port, Options]),
     Access = proplists:get_value(access, Options, []),
-    Module = proplists:get_value(request_module, Options, ?MODULE),
-    {ok, #state{ access = Access, module = Module}}.    
+    Module = proplists:get_value(request_handler, Options, undefined),
+    {ok, #state{ access = Access, request_handler = Module}}.    
+
+%%-----------------------------------------------------------------------------
+%% @doc
+%%  Init function called when a connection is established.
+%%
+%% @end
+%%-----------------------------------------------------------------------------
+-spec data(Socket::#exo_socket{}, 
+	   Data::term(),
+	   State::#state{}) -> 
+		  {ok, NewState::#state{}} |
+		  {stop, {error, Reason::term()}, NewState::#state{}}.
 
 data(Socket, Data, State) ->
     ?debug("exo_http_server:~w: data = ~w\n", [self(),Data]),
@@ -85,9 +121,30 @@ data(Socket, Data, State) ->
 	    {stop, Error, State}
     end.
 
+%%-----------------------------------------------------------------------------
+%% @doc
+%%  Init function called when a connection is established.
+%%
+%% @end
+%%-----------------------------------------------------------------------------
+-spec close(Socket::#exo_socket{}, 
+	    State::#state{}) -> 
+		   {ok, NewState::#state{}}.
+
 close(_Socket, State) ->
     ?debug("exo_http_server: close\n", []),
     {ok,State}.
+
+%%-----------------------------------------------------------------------------
+%% @doc
+%%  Init function called when a connection is established.
+%%
+%% @end
+%%-----------------------------------------------------------------------------
+-spec error(Socket::#exo_socket{},
+	    Error::term(),
+	    State::#state{}) -> 
+		   {stop, {error, Reason::term()}, NewState::#state{}}.
 
 error(_Socket,Error,State) ->
     ?debug("exo_http_serber: error = ~p\n", [Error]),
@@ -108,11 +165,11 @@ handle_request(Socket, R, State) ->
 	    {stop, Error, State}
     end.
 	    
-handle_body(Socket, Request, Body, State=#state {module = Module}) 
-  when Module =/= ?MODULE ->
+handle_body(Socket, Request, Body, 
+	    State=#state {request_handler = {Module, Function}}) ->
     ?debug("exo_http_server: calling ~p with -BODY:\n~s\n-END-BODY\n", 
 	   [Module, Body]),
-    case apply(Module, handle_request, [Socket, Request, Body]) of
+    case apply(Module, Function, [Socket, Request, Body]) of
 	ok -> {ok, State};
 	stop -> {stop, normal, State};
 	{error, Error} ->  {stop, Error, State}
@@ -134,6 +191,20 @@ handle_body(Socket, Request, Body, State) ->
 	    {ok, State}
     end.
 
+%%-----------------------------------------------------------------------------
+%% @doc
+%%  Support function for sending a response.
+%%
+%% @end
+%%-----------------------------------------------------------------------------
+-spec response(Socket::#exo_socket{}, 
+	      Connection::string() | undefined,
+	      Status::integer(),
+	      Phrase::string(),
+	      Status::string()) -> 
+				ok |
+				{error, Reason::term()}.
+
 response(S, Connection, Status, Phrase, String) ->
     H = #http_shdr { connection = Connection,
 		     content_length = length(String),
@@ -150,7 +221,7 @@ response(S, Connection, Status, Phrase, String) ->
     ?debug("exo_http_server: response:\n~s\n", [Response]),
     exo_socket:send(S, Response).
 
-
+%% @private
 test() ->
     Dir = code:priv_dir(exo),
     exo_socket_server:start(9000, [tcp,probe_ssl,http],
