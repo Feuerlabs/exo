@@ -35,7 +35,8 @@
 	  socket,
 	  active,
 	  state,
-	  pending = []
+	  pending = [],
+	  idle_timeout
 	 }).
 
 -include("exo_socket.hrl").
@@ -131,20 +132,31 @@ handle_call({C, Msg}, From, #state{module = M, state = MSt} = State) when
     %% 	    {noreply, State#state{state = MSt1}}
     %% end;
 handle_call(_, _, State) ->
-    {reply, {error, unknown_call}, State}.
+    ret({reply, {error, unknown_call}, State}).
 
 
 mod_reply({ignore, MSt}, _, State) ->
-    {noreply, State#state{state = MSt}};
+    ret({noreply, State#state{state = MSt}});
+mod_reply({ignore, MSt, Timeout}, _, State) ->
+    ret({noreply, State#state{state = MSt}, Timeout});
 mod_reply({reply, Reply, MSt}, _, State) ->
-    {reply, Reply, State#state{state = MSt}};
-mod_reply({send, Bin, MSt}, From, #state{socket = S, pending = P} = State) ->
+    ret({reply, Reply, State#state{state = MSt}});
+mod_reply({reply, Reply, MSt, Timeout}, _, State) ->
+    ret({reply, Reply, State#state{state = MSt}, Timeout});
+mod_reply({send, Bin, MSt}, From, State) ->
+    State1 = send_(Bin, From, State#state{state = MSt}),
+    ret({noreply, State1});
+mod_reply({send, Bin, MSt, Timeout}, From, State) ->
+    State1 = send_(Bin, From, State#state{state = MSt}),
+    ret({noreply, State1, Timeout}).
+
+send_(Bin, From, #state{socket = S, pending = P} = State) ->
     P1 = if P == [] ->
 		 exo_socket:send(S, Bin),
 		 [{From,Bin}|P];
 	    true -> P
 	 end,
-    {noreply, State#state{pending = P1, state = MSt}}.
+    State#state{pending = P1}.
 
 
 
@@ -166,7 +178,8 @@ handle_cast({activate,Active}, State0) ->
 	    State = State0#state{socket = S},
 	    case apply(State#state.module, init,
 		       [State#state.socket,State#state.args]) of
-		{ok,CSt0} ->
+		Ok when element(1, Ok) == ok ->
+		    CSt0 = element(2, Ok),
 		    %% enable active mode here (if ever wanted) once is handled,
 		    %% automatically anyway. exit_on_close is default and
 		    %% allow session statistics retrieval in the close callback
@@ -174,8 +187,13 @@ handle_cast({activate,Active}, State0) ->
 
 		    _Res = exo_socket:setopts(State#state.socket, SessionOpts),
 		    ?dbg("exo_socket:setopts(~w) = ~w\n", [SessionOpts, _Res]),
-		    {noreply, State#state { active = Active, state = CSt0 }};
-
+		    State1 = State#state { active = Active, state = CSt0 },
+		    case Ok of
+			{_, _, Timeout} ->
+			    ret({noreply, State1, Timeout});
+			{_, _} ->
+			    ret({noreply, State1})
+		    end;
 		{stop,Reason,CSt1} ->
 		    {stop, Reason, State#state { state = CSt1 }}
 	    end;
@@ -187,7 +205,7 @@ handle_cast({activate,Active}, State0) ->
     end;
 
 handle_cast(_Msg, State) ->
-    {noreply, State}.
+    ret({noreply, State}).
 
 %%--------------------------------------------------------------------
 %% @private
@@ -211,6 +229,10 @@ handle_cast(_Msg, State) ->
 %% 	    ok
 %%     end,
 %%     {noreply, State};
+handle_info(timeout, State) ->
+    exo_socket:shutdown(State#state.socket, write),
+    ?dbg("exo_socket_session: idle_timeout~p~n", [self()]),
+    {stop, normal, State};
 handle_info({Tag,Socket,Data0}, State) when 
       %% FIXME: put socket tag in State for correct matching
       (Tag =:= tcp orelse Tag =:= ssl orelse Tag =:= http), 
@@ -224,7 +246,7 @@ handle_info({Tag,Socket,Data0}, State) when
     catch
 	error:_ ->
 	    exo_socket:shutdown(State#state.socket, write),
-	    {noreply, State}
+	    ret({noreply, State})
     end;
 handle_info({Tag,Socket}, State) when
       (Tag =:= tcp_closed orelse Tag =:= ssl_closed),
@@ -242,14 +264,14 @@ handle_info({Tag,Socket,Error}, State) when
     CSt0 = State#state.state,
     case apply(State#state.module, error, [State#state.socket,Error,CSt0]) of
 	{ok,CSt1} ->
-	    {noreply, State#state { state = CSt1 }};
+	    ret({noreply, State#state { state = CSt1 }});
 	{stop,Reason,CSt1} ->
 	    {stop, Reason, State#state { state = CSt1 }}
     end;
     
 handle_info(_Info, State) ->
     ?dbg("Got info: ~p\n", [_Info]),
-    {noreply, State}.
+    ret({noreply, State}).
 
 %%--------------------------------------------------------------------
 %% @private
@@ -281,6 +303,28 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
+ret({noreply, #state{idle_timeout = T} = S}) ->
+    if T==undefined -> {noreply, S};
+       true         -> {noreply, S, T}
+    end;
+ret({reply, R, #state{idle_timeout = T} = S}) ->
+    if T==undefined -> {reply, R, S};
+       true         -> {reply, R, S, T}
+    end;
+ret({noreply, S, T}) ->
+    S1 = S#state{idle_timeout = T},
+    if T==undefined -> {noreply, S1};
+       true         -> {noreply, S1, T}
+    end;
+ret({reply, R, S, T}) ->
+    S1 = S#state{idle_timeout = T},
+    if T==undefined -> {reply, R, S1};
+       true         -> {reply, R, S1, T}
+    end;
+ret(R) ->
+    R.
+
+
 %% continued from handle_info/2
 handle_reuse_data(Rest, #state{module = M, state = MSt} = State) ->
     Config = decode_reuse_config(Rest),
@@ -295,7 +339,7 @@ handle_reuse_data(Rest, #state{module = M, state = MSt} = State) ->
        true ->
 	    ok
     end,
-    {noreply, State1}.
+    ret({noreply, State1}).
 
 handle_socket_data(Data, State) ->
     CSt0 = State#state.state,
@@ -306,11 +350,11 @@ handle_socket_data(Data, State) ->
 	       true ->
 		    ok
 	    end,
-	    {noreply, State#state { state = CSt1 }};
+	    ret({noreply, State#state { state = CSt1 }});
 
 	{close, CSt1} ->
 	    exo_socket:shutdown(State#state.socket, write),
-	    {noreply, State#state { state = CSt1 }};
+	    ret({noreply, State#state { state = CSt1 }});
 
 	{stop,Reason,CSt1} ->
 	    {stop, Reason, State#state { state = CSt1 }};
@@ -324,10 +368,10 @@ handle_socket_data(Data, State) ->
 		[{From,_}|Rest] ->
 		    gen_server:reply(From, Rep),
 		    send_next(Rest, State#state.socket),
-		    {noreply, State#state { pending = Rest, state = CSt1 }};
+		    ret({noreply, State#state { pending = Rest, state = CSt1 }});
 		[] ->
 		    %% huh?
-		    {noreply, State#state { state = CSt1 }}
+		    ret({noreply, State#state { state = CSt1 }})
 	    end
     end.
 
