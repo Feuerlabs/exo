@@ -39,7 +39,8 @@
 
 %% Configurable start
 -export([start/2,
-	 response/5]).
+	 start_link/2,
+	 response/5, response/6]).
 
 %% For testing
 -export([test/0]).
@@ -67,6 +68,30 @@ start(Port, ServerOptions) ->
 			     {keyfile, filename:join(Dir, "host.key")},
 			     {certfile, filename:join(Dir, "host.cert")}],
 			    ?MODULE, ServerOptions).
+
+%%-----------------------------------------------------------------------------
+%% @doc
+%%  Starts and links a socket server on port Port with server options ServerOpts
+%% that are sent to the server when a connection is established, 
+%% i.e init is called.
+%%
+%% @end
+%%-----------------------------------------------------------------------------
+-spec start_link(Port::integer(), 
+		 ServerOptions::list({Option::atom(), Value::term()})) -> 
+			{ok, ChildPid::pid()} |
+			{error, Reason::term()}.
+
+start_link(Port, ServerOptions) ->
+    ?debug("exo_http_server: start: port ~p, server options ~p",
+	   [Port, ServerOptions]),
+    Dir = code:priv_dir(exo),
+    exo_socket_server:start_link(Port, [tcp,probe_ssl,http],
+				 [{active,once},{reuseaddr,true},
+				  {verify, verify_none},
+				  {keyfile, filename:join(Dir, "host.key")},
+				  {certfile, filename:join(Dir, "host.cert")}],
+				 ?MODULE, ServerOptions).
 
 %%-----------------------------------------------------------------------------
 %% @doc
@@ -167,10 +192,11 @@ handle_request(Socket, R, State) ->
     end.
 	    
 handle_body(Socket, Request, Body, 
-	    State=#state {request_handler = {Module, Function}}) ->
+	    State=#state {request_handler = RH}) when is_tuple(RH) ->
+    {M, F, As} = request_handler(RH, Socket, Request, Body),
     ?debug("exo_http_server: calling ~p with -BODY:\n~s\n-END-BODY\n", 
-	   [Module, Body]),
-    case apply(Module, Function, [Socket, Request, Body]) of
+	   [RH, Body]),
+    case apply(M, F, As) of
 	ok -> {ok, State};
 	stop -> {stop, normal, State};
 	{error, Error} ->  {stop, Error, State}
@@ -192,6 +218,13 @@ handle_body(Socket, Request, Body, State) ->
 	    {ok, State}
     end.
 
+%% @private
+request_handler({Module, Function}, Socket, Request, Body) ->
+    {Module, Function, [Socket, Request, Body]};
+request_handler({Module, Function, XArgs}, Socket, Request, Body) ->
+    {Module, Function, [Socket, Request, Body | XArgs]}.
+
+
 %%-----------------------------------------------------------------------------
 %% @doc
 %%  Support function for sending a response.
@@ -207,20 +240,37 @@ handle_body(Socket, Request, Body, State) ->
 				{error, Reason::term()}.
 
 response(S, Connection, Status, Phrase, String) ->
+    response(S, Connection, Status, Phrase, String, []).
+
+response(S, Connection, Status, Phrase, Body, Opts) ->
+    ContentType = opt(content_type, Opts, "text/plain"),
     H = #http_shdr { connection = Connection,
-		     content_length = length(String),
-		     content_type = "text/plain" },
-    R = #http_response { version = {1,1},
-			status = Status,
-			phrase = Phrase,
-			headers = H},	
+		     content_length = content_length(Body),
+		     content_type = ContentType },
+    R = #http_response { version = {1, 1},
+			 status = Status,
+			 phrase = Phrase,
+			 headers = H },
     Response = [exo_http:format_response(R),
 		?CRNL,
 		exo_http:format_hdr(H),
 		?CRNL,
-		String],
+		Body],
     ?debug("exo_http_server: response:\n~s\n", [Response]),
     exo_socket:send(S, Response).
+
+content_length(B) when is_binary(B) ->
+    byte_size(B);
+content_length(L) when is_list(L) ->
+    iolist_size(L).
+
+
+opt(K, L, Def) ->
+    case lists:keyfind(K, 1, L) of
+	{_, V} -> V;
+	false  -> Def
+    end.
+
 
 %% @private
 test() ->
