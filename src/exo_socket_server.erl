@@ -75,8 +75,31 @@
 %%%===================================================================
 %%% API
 %%%===================================================================
-
-%% The plugin behaviour
+%%--------------------------------------------------------------------
+%% @doc
+%% The plugin behaviour:<br>
+%% init(Socket::socket(), Args::[term()] <br>
+%%   -> {ok,NewState::state()} | <br>
+%%      {stop,Reason::term(),NewState::state()}<br>
+%% data(Socket::socket(), Data::io_list(), State::state()) <br>
+%%   -> {ok,NewState::state()}|<br>
+%%      {close,NewState::state()}|<br>
+%%      {stop,Reason::term(),NewState::state()}<br>
+%% close(Socket::socket(), State::state())<br>
+%%   -> {ok,state()}<br>
+%% error(Socket::socket(),Error::error(), State::state())<br>
+%%   -> {ok,NewState::state()} | <br>
+%%      {stop,Reason::term(),NewState::state()}<br>
+%% control(Socket::socket(), Request::term(), From::term(), State::state())<br>
+%%   -> {reply, Reply::term(),NewState::state()} | <br>
+%%      {noreply, NewState::state()} |<br>
+%%      {ignore, NewState::state()} | <br>
+%%      {send, Bin::binary(), NewState::state()} |<br>
+%%      {data, Data::term(), NewState::state()} |<br>
+%%      {stop, Reason::term(),NewState::state()}<br>
+%% @end
+%%--------------------------------------------------------------------
+-spec behaviour_info(callbacks) -> list().
 behaviour_info(callbacks) ->
     [
      {init,  2},  %% init(Socket::socket(), Args::[term()] 
@@ -85,8 +108,13 @@ behaviour_info(callbacks) ->
                   %%   -> {ok,state()}|{close,state()}|{stop,reason(),state()}
      {close, 2},  %% close(Socket::socket(), State::state())
                   %%   -> {ok,state()}
-     {error, 3}   %% error(Socket::socket(),Error::error(), State:state())
-                  %%   -> {ok,state8)} | {stop,reason(),state()}
+     {error, 3},  %% error(Socket::socket(),Error::error(), State:state())
+                  %%   -> {ok,state()} | {stop,reason(),state()}
+     {control, 4} %% control(Socket::socket(), Request::term(), 
+                  %%         From::term(), State:state())
+                  %%   -> {reply, Reply::term(),state()} | {noreply, state()} |
+                  %%      {ignore, state()} | {send, Bin::binary(), state()} |
+                  %%      {data, Data::trem()} |{stop,reason(),state()}
     ];
 behaviour_info(_Other) ->
     undefined.
@@ -108,6 +136,9 @@ start(Port, Protos, Options, Module, Args) ->
 
 start(ServerName, Protos, Port, Options, Module, Args) ->
     gen_server:start(ServerName, ?MODULE, [Port,Protos,Options,Module,Args], []).
+
+-spec reusable_sessions(Process::pid() | atom()) ->
+	   list({{IpAddress::tuple(), Port::integer}, Pid::pid}).
 
 reusable_sessions(P) ->
     gen_server:call(P, reusable_sessions).
@@ -161,17 +192,17 @@ init([Port,Protos,Options,Module,Args] = _X) ->
 %%--------------------------------------------------------------------
 %% @private
 %% @doc
-%% Handling call messages
+%% Handling call messages. <br>
 %%
-%% @spec handle_call(Request, From, State) ->
-%%                                   {reply, Reply, State} |
-%%                                   {reply, Reply, State, Timeout} |
-%%                                   {noreply, State} |
-%%                                   {noreply, State, Timeout} |
-%%                                   {stop, Reason, Reply, State} |
-%%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+-spec handle_call(Request::term(), 
+		  From::{pid(), Tag::term()}, 
+		  State::#state{}) ->
+			 {reply, Reply::term(), State::#state{}} |
+			 {noreply, State::#state{}} |
+			 {stop, Reason::atom(), Reply::term(), State::#state{}}.
+
 handle_call({get_session, Host, Port, Opts}, From,
 	    #state{socket_reuse = Reuse} = State) ->
     Key = {Host, Port},
@@ -212,7 +243,8 @@ handle_call(reusable_sessions, _From, #state{socket_reuse = R} = State) ->
 	_ ->
 	    {reply, [], State}
     end;
-handle_call(_Request, _From, State) ->
+handle_call(Request, _From, State) ->
+    ?debug("~p: handle_call(~p) not implemented!!", [?MODULE, Request]),
     Reply = ok,
     {reply, Reply, State}.
 

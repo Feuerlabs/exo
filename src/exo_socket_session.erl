@@ -19,13 +19,19 @@
 -behaviour(gen_server).
 
 %% API
--export([start/3, start_link/3]).
+-export([start/3, 
+	 start_link/3]).
 
 %% gen_server callbacks
--export([init/1, handle_call/3, handle_cast/2, handle_info/2,
-	 terminate/2, code_change/3]).
+-export([init/1, 
+	 handle_call/3, 
+	 handle_cast/2, 
+	 handle_info/2,
+	 terminate/2, 
+	 code_change/3]).
 
--export([encode_reuse/2, decode_reuse_config/1]).
+-export([encode_reuse/2, 
+	 decode_reuse_config/1]).
 
 -define(SERVER, ?MODULE). 
 
@@ -43,11 +49,6 @@
 
 -include_lib("lager/include/log.hrl").
 -define(dbg(F, A), ?debug("~p " ++ F, [self()|A])).
-%% -ifdef(debug).
-%% -define(dbg(F, A), io:format((F), (A))).
-%% -else.
-%% -define(dbg(F, A), ok).
-%% -endif.
 
 -type exo_socket() :: #exo_socket {}.
 %%%===================================================================
@@ -97,44 +98,35 @@ init([XSocket, Module, Args]) ->
 %%--------------------------------------------------------------------
 %% @private
 %% @doc
-%% Handling call messages
+%% Handling call messages.<br>
+%% First take care of messages specific for exo_socket_session,
+%% then call control in #state.module.
 %%
-%% @spec handle_call(Request, From, State) ->
-%%                                   {reply, Reply, State} |
-%%                                   {reply, Reply, State, Timeout} |
-%%                                   {noreply, State} |
-%%                                   {noreply, State, Timeout} |
-%%                                   {stop, Reason, Reply, State} |
-%%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_call(get_access, From, #state{module = M,
-				     state = MSt} = State) ->
-    mod_reply(M:handle_call(From, get_access, MSt), From, State);
-handle_call({set_access, A}, From, #state{module = M,
-					  state = MSt} = State) ->
-    mod_reply(M:handle_call(From, {set_access, A}, MSt), From, State);
-handle_call({C, Msg}, From, #state{module = M, state = MSt} = State) when
-      C == call; C == cast ->
-    mod_reply(M:handle_call(C, Msg, MSt), From, State);
-    %% case M:handle_call(C, Msg, MSt) of
-    %% 	{send, Bin, MSt1} ->
-    %% 	    P1 = if P == [] ->
-    %% 			 exo_socket:send(S, Bin),
-    %% 			 [{From,Bin}|P];
-    %% 		    true -> P
-    %% 		 end,
-    %% 	    {noreply, State#state{pending = P1,
-    %% 				  state = MSt1}};
-    %% 	{reply, Reply, MSt1} ->
-    %% 	    {reply, Reply, State#state{state = MSt1}};
-    %% 	{ignore, MSt1} ->
-    %% 	    {noreply, State#state{state = MSt1}}
-    %% end;
-handle_call(_, _, State) ->
-    ret({reply, {error, unknown_call}, State}).
+-spec handle_call(Request::term(), 
+		  From::{pid(), Tag::term()}, 
+		  State::#state{}) ->
+			 {reply, Reply::term(), State::#state{}} |
+			 {noreply, State::#state{}} |
+			 {stop, Reason::atom(), Reply::term(), State::#state{}}.
 
+%% No 'local' handle_call
+handle_call(Request, From, 
+	    State=#state{module = M, state = MSt, socket = Socket}) ->
+    ?dbg("handle_call: ~p", [Request]),
+    try M:control(Socket, Request, From, MSt) of
+	Result -> 
+	    ?dbg("handle_call: reply ~p", [Result]),
+	    mod_reply(Result, From, State)
+    catch
+	error:_Error -> 
+	    ?dbg("handle_call: catch reason  ~p", [_Error]),
+	    ret({reply, {error, unknown_call}, State})
+    end.
 
+mod_reply({data, Data, MSt}, _, State) ->
+    handle_socket_data(Data, State#state{state = MSt});
 mod_reply({ignore, MSt}, _, State) ->
     ret({noreply, State#state{state = MSt}});
 mod_reply({ignore, MSt, Timeout}, _, State) ->
@@ -153,6 +145,7 @@ mod_reply({send, Bin, MSt, Timeout}, From, State) ->
 send_(Bin, From, #state{socket = S, pending = P} = State) ->
     P1 = if P == [] ->
 		 exo_socket:send(S, Bin),
+		 ?dbg("send: bin sent to ~p", [S]),
 		 [{From,Bin}|P];
 	    true -> P
 	 end,
@@ -217,18 +210,6 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-%% handle_info({Tag,Socket,<<"reuse%", Rest/binary>>}, State) when
-%%       (Tag =:= tcp orelse Tag =:= ssl orelse Tag =:= http), 
-%%       Socket =:= (State#state.socket)#exo_socket.socket ->
-%%     Config = decode_reuse_config(Rest),
-%%     {ok, {Host,_}} = exo_socket:peername(State#state.socket),
-%%     get_parent(State) ! {self(), reuse, [{host, Host}|Config]},
-%%     if State#state.active == once ->
-%% 	    exo_socket:setopts(State#state.socket, [{active,once}]);
-%%        true ->
-%% 	    ok
-%%     end,
-%%     {noreply, State};
 handle_info(timeout, State) ->
     exo_socket:shutdown(State#state.socket, write),
     ?dbg("exo_socket_session: idle_timeout~p~n", [self()]),
@@ -237,7 +218,7 @@ handle_info({Tag,Socket,Data0}, State) when
       %% FIXME: put socket tag in State for correct matching
       (Tag =:= tcp orelse Tag =:= ssl orelse Tag =:= http), 
       Socket =:= (State#state.socket)#exo_socket.socket ->
-    ?dbg("exo_socket_session: got ~p\n", [{Tag,Socket,Data0}]),
+    ?dbg("exo_socket_session: got data ~p\n", [{Tag,Socket,Data0}]),
     try exo_socket:auth_incoming(State#state.socket, Data0) of
 	<<"reuse%", Rest/binary>> ->
 	    handle_reuse_data(Rest, State);
@@ -251,7 +232,7 @@ handle_info({Tag,Socket,Data0}, State) when
 handle_info({Tag,Socket}, State) when
       (Tag =:= tcp_closed orelse Tag =:= ssl_closed),
       Socket =:= (State#state.socket)#exo_socket.socket ->
-    ?dbg("exo_socket_session: got ~p\n", [{Tag,Socket}]),
+    ?dbg("exo_socket_session: got tag ~p\n", [{Tag,Socket}]),
     CSt0 = State#state.state,
     case apply(State#state.module, close, [State#state.socket,CSt0]) of
 	{ok,CSt1} ->
@@ -260,7 +241,7 @@ handle_info({Tag,Socket}, State) when
 handle_info({Tag,Socket,Error}, State) when 
       (Tag =:= tcp_error orelse Tag =:= ssl_error),
       Socket =:= (State#state.socket)#exo_socket.socket ->
-    ?dbg("exo_socket_session: got ~p\n", [{Tag,Socket,Error}]),
+    ?dbg("exo_socket_session: got error ~p\n", [{Tag,Socket,Error}]),
     CSt0 = State#state.state,
     case apply(State#state.module, error, [State#state.socket,Error,CSt0]) of
 	{ok,CSt1} ->
@@ -343,38 +324,37 @@ handle_reuse_data(Rest, #state{module = M, state = MSt} = State) ->
 
 handle_socket_data(Data, State) ->
     CSt0 = State#state.state,
-    case apply(State#state.module, data, [State#state.socket,Data,CSt0]) of
-	{ok,CSt1} ->
-	    if State#state.active == once ->
-		    exo_socket:setopts(State#state.socket, [{active,once}]);
-	       true ->
-		    ok
-	    end,
-	    ret({noreply, State#state { state = CSt1 }});
+    handle_module_result(apply(State#state.module, data, 
+			       [State#state.socket,Data,CSt0]),
+			State).
 
-	{close, CSt1} ->
-	    exo_socket:shutdown(State#state.socket, write),
-	    ret({noreply, State#state { state = CSt1 }});
-
-	{stop,Reason,CSt1} ->
-	    {stop, Reason, State#state { state = CSt1 }};
-	{reply, Rep, CSt1} ->
-	    if State#state.active == once ->
-		    exo_socket:setopts(State#state.socket, [{active,once}]);
-	       true ->
-		    ok
-	    end,
-	    case State#state.pending of
-		[{From,_}|Rest] ->
-		    gen_server:reply(From, Rep),
-		    send_next(Rest, State#state.socket),
-		    ret({noreply, State#state { pending = Rest, state = CSt1 }});
-		[] ->
-		    %% huh?
-		    ret({noreply, State#state { state = CSt1 }})
-	    end
+handle_module_result({ok,CSt1}, State) ->
+    if State#state.active == once ->
+	    exo_socket:setopts(State#state.socket, [{active,once}]);
+       true ->
+	    ok
+    end,
+    ret({noreply, State#state { state = CSt1 }});
+handle_module_result({close, CSt1}, State) ->
+    exo_socket:shutdown(State#state.socket, write),
+    ret({noreply, State#state { state = CSt1 }});
+handle_module_result({stop,Reason,CSt1}, State) ->
+    {stop, Reason, State#state { state = CSt1 }};
+handle_module_result({reply, Rep, CSt1}, State) ->
+    if State#state.active == once ->
+	    exo_socket:setopts(State#state.socket, [{active,once}]);
+       true ->
+	    ok
+    end,
+    case State#state.pending of
+	[{From,_}|Rest] ->
+	    gen_server:reply(From, Rep),
+	    send_next(Rest, State#state.socket),
+	    ret({noreply, State#state { pending = Rest, state = CSt1 }});
+	[] ->
+	    %% huh?
+	    ret({noreply, State#state { state = CSt1 }})
     end.
-
 
 send_next([{_From, Msg}|_], Socket) ->
     exo_socket:send(Socket, Msg);
