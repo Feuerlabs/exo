@@ -126,7 +126,12 @@ handle_call(Request, From,
     end.
 
 mod_reply({data, Data, MSt}, _, State) ->
-    handle_socket_data(Data, State#state{state = MSt});
+    %% This case is when data has come from an external source
+    %% that needs an additonal ok reply
+    case handle_socket_data(Data, State#state{state = MSt}) of
+	{noreply, NewState} -> {reply, ok, NewState};
+	Other -> Other
+    end;
 mod_reply({ignore, MSt}, _, State) ->
     ret({noreply, State#state{state = MSt}});
 mod_reply({ignore, MSt, Timeout}, _, State) ->
@@ -324,9 +329,10 @@ handle_reuse_data(Rest, #state{module = M, state = MSt} = State) ->
 
 handle_socket_data(Data, State) ->
     CSt0 = State#state.state,
-    handle_module_result(apply(State#state.module, data, 
-			       [State#state.socket,Data,CSt0]),
-			State).
+    ModResult = apply(State#state.module, data, 
+		      [State#state.socket,Data,CSt0]),
+    ?dbg("handle_socket_data: result ~p", [ModResult]),
+    handle_module_result(ModResult, State).
 
 handle_module_result({ok,CSt1}, State) ->
     if State#state.active == once ->
