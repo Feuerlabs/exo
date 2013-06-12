@@ -145,7 +145,9 @@ mod_reply({send, Bin, MSt}, From, State) ->
     ret({noreply, State1});
 mod_reply({send, Bin, MSt, Timeout}, From, State) ->
     State1 = send_(Bin, From, State#state{state = MSt}),
-    ret({noreply, State1, Timeout}).
+    ret({noreply, State1, Timeout});
+mod_reply({stop, Reason, _MSt}, _From, State) ->
+    {stop, Reason, State}.
 
 send_(Bin, From, #state{socket = S, pending = P} = State) ->
     P1 = if P == [] ->
