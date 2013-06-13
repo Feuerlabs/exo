@@ -146,8 +146,10 @@ mod_reply({send, Bin, MSt}, From, State) ->
 mod_reply({send, Bin, MSt, Timeout}, From, State) ->
     State1 = send_(Bin, From, State#state{state = MSt}),
     ret({noreply, State1, Timeout});
-mod_reply({stop, Reply, Reason, _MSt}, _From, State) ->
-    {stop, Reason, State}.
+mod_reply({stop, Reason, Reply, _MSt}, _From, State) ->
+    %% Terminating
+    ?dbg("handle_call: stopping ~p with reason ~p", [self(), Reason]),
+    {stop, Reason, Reply, State}.
 
 send_(Bin, From, #state{socket = S, pending = P} = State) ->
     P1 = if P == [] ->
