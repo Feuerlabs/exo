@@ -17,7 +17,6 @@
 
 -behaviour(ssh_channel).
 
--include_lib("ssh/src/ssh_connect.hrl").
 %% ssh_channel callbacks
 -export([init/1, handle_msg/2, handle_ssh_msg/2, terminate/2]).
 
@@ -33,6 +32,12 @@
 	  cm       %% Ssh connection manager
 	 }
        ).
+
+%% -include_lib("ssh/src/ssh_connect.hrl").
+%% fixme: ?
+-define(SSH_EXTENDED_DATA_DEFAULT, 0).
+-define(SSH_EXTENDED_DATA_STDERR,  1).
+
 
 init() ->
     application:start(crypto),    

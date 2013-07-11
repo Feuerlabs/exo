@@ -202,7 +202,7 @@ auth_incoming(#exo_socket{mauth = M, auth_state = Sa} = X, Data) ->
     catch
 	error:E ->
 	    shutdown(X, write),
-	    error(E)
+	    erlang:error(E)
     end.
 
 
@@ -450,7 +450,7 @@ recv(#exo_socket { mdata = M, socket = S,
 	    catch
 		error:E ->
 		    shutdown(X, write),
-		    error(E)
+		    erlang:error(E)
 	    end
     end.
 
