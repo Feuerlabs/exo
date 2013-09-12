@@ -25,7 +25,9 @@
 	 close/2, 
 	 error/3]).
 
--include_lib("lager/include/log.hrl").
+-export([control/4]).
+
+-include("log.hrl").
 -include("exo_socket.hrl").
 -include("exo_http.hrl").
 
@@ -110,6 +112,11 @@ init(Socket, Options) ->
     Access = proplists:get_value(access, Options, []),
     Module = proplists:get_value(request_handler, Options, undefined),
     {ok, #state{ access = Access, request_handler = Module}}.    
+
+
+%% To avoid a compiler warning. Should we actually support something here?
+control(_Socket, _Request, _From, State) ->
+    {ignore, State}.
 
 %%-----------------------------------------------------------------------------
 %% @doc

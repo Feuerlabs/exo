@@ -47,7 +47,7 @@
 
 -include("exo_socket.hrl").
 
--include_lib("lager/include/log.hrl").
+-include("log.hrl").
 -define(dbg(F, A), ?debug("~p " ++ F, [self()|A])).
 
 -type exo_socket() :: #exo_socket {}.

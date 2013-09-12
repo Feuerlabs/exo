@@ -48,7 +48,7 @@
 -export([behaviour_info/1]).
 
 -include("exo_socket.hrl").
--include_lib("lager/include/log.hrl").
+-include("log.hrl").
 
 %% -define(debug(Fmt,Args), ok).
 %% -define(error(Fmt,Args), error_logger:format(Fmt, Args)).

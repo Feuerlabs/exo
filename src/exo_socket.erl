@@ -32,7 +32,7 @@
 -export([auth_incoming/2, authenticate/1]).
 
 -include("exo_socket.hrl").
--include_lib("lager/include/log.hrl").
+-include("log.hrl").
 
 -define(dbg(F, A), ?debug("~p " ++ F, [self()|A])).
 %% -ifdef(debug).
