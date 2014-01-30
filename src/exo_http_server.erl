@@ -115,6 +115,16 @@ init(Socket, Options) ->
 
 
 %% To avoid a compiler warning. Should we actually support something here?
+%%-----------------------------------------------------------------------------
+%% @doc
+%%  Control function - not used.
+%%
+%% @end
+%%-----------------------------------------------------------------------------
+-spec control(Socket::#exo_socket{}, 
+	      Request::term(), From::term(), State::#state{}) -> 
+		     {ignore, State::#state{}}.
+
 control(_Socket, _Request, _From, State) ->
     {ignore, State}.
 
@@ -234,7 +244,7 @@ request_handler({Module, Function, XArgs}, Socket, Request, Body) ->
 
 %%-----------------------------------------------------------------------------
 %% @doc
-%%  Support function for sending a response.
+%%  Support function for sending an http response.
 %%
 %% @end
 %%-----------------------------------------------------------------------------
@@ -242,13 +252,27 @@ request_handler({Module, Function, XArgs}, Socket, Request, Body) ->
 	      Connection::string() | undefined,
 	      Status::integer(),
 	      Phrase::string(),
-	      Status::string()) -> 
+	      Body::string()) -> 
 				ok |
 				{error, Reason::term()}.
 
-response(S, Connection, Status, Phrase, String) ->
-    response(S, Connection, Status, Phrase, String, []).
+response(S, Connection, Status, Phrase, Body) ->
+    response(S, Connection, Status, Phrase, Body, []).
 
+%%-----------------------------------------------------------------------------
+%% @doc
+%%  Support function for sending an http response.
+%%
+%% @end
+%%-----------------------------------------------------------------------------
+-spec response(Socket::#exo_socket{}, 
+	      Connection::string() | undefined,
+	      Status::integer(),
+	      Phrase::string(),
+	      Body::string(),
+	      Opts::list()) -> 
+				ok |
+				{error, Reason::term()}.
 response(S, Connection, Status, Phrase, Body, Opts) ->
     ContentType = opt(content_type, Opts, "text/plain"),
     H = #http_shdr { connection = Connection,

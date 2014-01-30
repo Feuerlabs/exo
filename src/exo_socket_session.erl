@@ -51,6 +51,7 @@
 -define(dbg(F, A), ?debug("~p " ++ F, [self()|A])).
 
 -type exo_socket() :: #exo_socket {}.
+
 %%%===================================================================
 %%% API
 %%%===================================================================
@@ -98,7 +99,7 @@ init([XSocket, Module, Args]) ->
 %%--------------------------------------------------------------------
 %% @private
 %% @doc
-%% Handling call messages.<br>
+%% Handling call messages.<br/>
 %% First take care of messages specific for exo_socket_session,
 %% then call control in #state.module.
 %%

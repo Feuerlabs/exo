@@ -11,30 +11,12 @@
 %%% @author Tony Rogvall <tony@rogvall.se>
 %%% @doc
 %%%    General socket server
+%%% Created : 22 Aug 2011 by Tony Rogvall 
 %%% @end
-%%% Created : 22 Aug 2011 by Tony Rogvall <tony@rogvall.se>
 %%%-------------------------------------------------------------------
 -module(exo_socket_server).
 
 -behaviour(gen_server).
-
-%%
-%% methods
-%%   init(Socket, Args) ->  
-%%      {ok, State'}
-%%      {stop, Reason, State'}
-%%
-%%   data(Socket, Data, State) ->
-%%      {ok, State'}
-%%      {stop, Reason, State'};
-%%
-%%   close(Socket, State) ->
-%%      {ok, State'}
-%%      
-%%   error(Socket, Error, State) ->
-%%      {ok, State'}
-%%      {stop, Reason, State'}
-%%
 
 %% API
 -export([start_link/5, start_link/6]).
@@ -77,26 +59,28 @@
 %%%===================================================================
 %%--------------------------------------------------------------------
 %% @doc
-%% The plugin behaviour:<br>
-%% init(Socket::socket(), Args::[term()] <br>
-%%   -> {ok,NewState::state()} | <br>
-%%      {stop,Reason::term(),NewState::state()}<br>
-%% data(Socket::socket(), Data::io_list(), State::state()) <br>
-%%   -> {ok,NewState::state()}|<br>
-%%      {close,NewState::state()}|<br>
-%%      {stop,Reason::term(),NewState::state()}<br>
-%% close(Socket::socket(), State::state())<br>
-%%   -> {ok,state()}<br>
-%% error(Socket::socket(),Error::error(), State::state())<br>
-%%   -> {ok,NewState::state()} | <br>
-%%      {stop,Reason::term(),NewState::state()}<br>
-%% control(Socket::socket(), Request::term(), From::term(), State::state())<br>
-%%   -> {reply, Reply::term(),NewState::state()} | <br>
-%%      {noreply, NewState::state()} |<br>
-%%      {ignore, NewState::state()} | <br>
-%%      {send, Bin::binary(), NewState::state()} |<br>
-%%      {data, Data::term(), NewState::state()} |<br>
-%%      {stop, Reason::term(),NewState::state()}<br>
+%% The plugin behaviour:<br/>
+%% <ul>
+%% <li>init(Socket::socket(), Args::[term()] <br/>
+%%   -> {ok,NewState::state()} | <br/>
+%%      {stop,Reason::term(),NewState::state()}<br/></li>
+%% <li>data(Socket::socket(), Data::io_list(), State::state()) <br/>
+%%   -> {ok,NewState::state()}|<br/>
+%%      {close,NewState::state()}|<br/>
+%%      {stop,Reason::term(),NewState::state()}<br/></li>
+%% <li>close(Socket::socket(), State::state())<br/>
+%%   -> {ok,state()}<br/></li>
+%% <li>error(Socket::socket(),Error::error(), State::state())<br/>
+%%   -> {ok,NewState::state()} | <br/>
+%%      {stop,Reason::term(),NewState::state()}<br/></li>
+%% <li>control(Socket::socket(), Request::term(), From::term(), State::state())<br/>
+%%   -> {reply, Reply::term(),NewState::state()} | <br/>
+%%      {noreply, NewState::state()} |<br/>
+%%      {ignore, NewState::state()} | <br/>
+%%      {send, Bin::binary(), NewState::state()} |<br/>
+%%      {data, Data::term(), NewState::state()} |<br/>
+%%      {stop, Reason::term(),NewState::state()}<br/></li>
+%% </ul>
 %% @end
 %%--------------------------------------------------------------------
 -spec behaviour_info(callbacks) -> list().
@@ -192,7 +176,7 @@ init([Port,Protos,Options,Module,Args] = _X) ->
 %%--------------------------------------------------------------------
 %% @private
 %% @doc
-%% Handling call messages. <br>
+%% Handling call messages. <br/>
 %%
 %% @end
 %%--------------------------------------------------------------------
