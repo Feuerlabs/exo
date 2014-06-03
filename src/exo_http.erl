@@ -64,7 +64,7 @@
 	 make_headers/2
 	]).
 
--import(lists, [map/2, reverse/1]).
+-import(lists, [reverse/1]).
 
 -ifdef(debug).
 -define(dbg(F, A), io:format((F), (A))).
