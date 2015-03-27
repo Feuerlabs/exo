@@ -8,7 +8,7 @@
 %%%
 %%%---- END COPYRIGHT ---------------------------------------------------------
 %%% @author Tony Rogvall <tony@rogvall.se>
-%%% @author Marina Westman Lönne <malotte@malotte.net>
+%%% @author Marina Westman Lonne <malotte@malotte.net>
 %%% @copyright (C) 2012, Feuerlabs, Inc. All rights reserved.
 %%% @doc
 %%%   Simple exo_http_server
@@ -46,6 +46,7 @@
 
 %% For testing
 -export([test/0]).
+-export([handle_http_request/3]).
 
 %%-----------------------------------------------------------------------------
 %% @doc
@@ -208,39 +209,26 @@ handle_request(Socket, R, State) ->
 	    {stop, Error, State}
     end.
 	    
-handle_body(Socket, Request, Body, 
-	    State=#state {request_handler = RH}) when is_tuple(RH) ->
-    {M, F, As} = request_handler(RH, Socket, Request, Body),
+handle_body(Socket, Request, Body, State) ->
+    RH = State#state.request_handler,
+    {M, F, As} = request_handler(RH,Socket, Request, Body),
     ?debug("exo_http_server: calling ~p with -BODY:\n~s\n-END-BODY\n", 
 	   [RH, Body]),
     case apply(M, F, As) of
 	ok -> {ok, State};
 	stop -> {stop, normal, State};
 	{error, Error} ->  {stop, Error, State}
-    end;
-handle_body(Socket, Request, Body, State) ->
-    Url = Request#http_request.uri,
-    ?debug("exo_http_server: -BODY:\n~s\n-END-BODY\n", [Body]),
-    if Request#http_request.method == 'GET',
-       Url#url.path == "/quit" ->
-	    response(Socket, "close", 200, "OK", "QUIT"),
-	    exo_socket:shutdown(Socket, write),
-	    {stop, normal, State};
-       Url#url.path == "/test" ->
-	    response(Socket, undefined, 200, "OK", "OK"),
-	    {ok, State};
-       true ->
-	    response(Socket, undefined, 404, "Not Found", 
-		     "Object not found"),
-	    {ok, State}
     end.
 
 %% @private
+request_handler(undefined, Socket, Request, Body) ->
+    {?MODULE, handle_http_request, [Socket, Request, Body]};
+request_handler(Module, Socket, Request, Body) when is_atom(Module) ->
+    {Module, handle_http_request, [Socket, Request, Body]};
 request_handler({Module, Function}, Socket, Request, Body) ->
     {Module, Function, [Socket, Request, Body]};
 request_handler({Module, Function, XArgs}, Socket, Request, Body) ->
     {Module, Function, [Socket, Request, Body | XArgs]}.
-
 
 %%-----------------------------------------------------------------------------
 %% @doc
@@ -302,8 +290,24 @@ opt(K, L, Def) ->
 	false  -> Def
     end.
 
-
 %% @private
+handle_http_request(Socket, Request, Body) ->
+    Url = Request#http_request.uri,
+    ?debug("exo_http_server: -BODY:\n~s\n-END-BODY\n", [Body]),
+    if Request#http_request.method =:= 'GET',
+       Url#url.path =:= "/quit" ->
+	    response(Socket, "close", 200, "OK", "QUIT"),
+	    exo_socket:shutdown(Socket, write),
+	    stop;
+       Url#url.path =:= "/test" ->
+	    response(Socket, undefined, 200, "OK", "OK"),
+	    ok;
+       true ->
+	    response(Socket, undefined, 404, "Not Found", 
+		     "Object not found"),
+	    ok
+    end.
+
 test() ->
     Dir = code:priv_dir(exo),
     exo_socket_server:start(9000, [tcp,probe_ssl,http],
@@ -312,4 +316,3 @@ test() ->
 			     {keyfile, filename:join(Dir, "host.key")},
 			     {certfile, filename:join(Dir, "host.cert")}],
 			    ?MODULE, []).
-
