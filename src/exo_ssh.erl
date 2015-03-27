@@ -18,7 +18,8 @@
 -behaviour(ssh_channel).
 
 %% ssh_channel callbacks
--export([init/1, handle_msg/2, handle_ssh_msg/2, terminate/2]).
+-export([init/1, handle_msg/2, handle_ssh_msg/2, terminate/2, code_change/3,
+         handle_cast/2, handle_call/3]).
 
 %% external api
 -export([connect/3]).
@@ -179,3 +180,11 @@ handle_msg({send, Data}, #state{ channel = ChannelId,
 terminate(_Reason, #state{}) ->
     ok.
 
+code_change(_OldVsn, State, _Extra) ->
+    {ok, State}.
+
+handle_call(_Request, _From, State) ->
+    {noreply, ok, State}.
+
+handle_cast(_Msg, State) ->
+    {noreply, State}.
