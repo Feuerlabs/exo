@@ -357,10 +357,10 @@ open(Request,Timeout) ->
     Url = if is_record(URI, url) -> URI;
 	     is_list(URI) -> exo_url:parse(URI, sloppy)
 	  end,
-    Scheme = if Url#url.scheme == undefined -> http;
+    Scheme = if Url#url.scheme =:= undefined -> http;
 		true -> Url#url.scheme
 	     end,
-    Port = if Url#url.port == undefined ->
+    Port = if Url#url.port =:= undefined ->
 		   case Scheme of
 		       http      -> 80;
 		       https     -> 443;
@@ -429,7 +429,7 @@ send(Socket, Method, URI, Version, H, Body, Proxy) ->
 	     is_list(URI) -> exo_url:parse(URI, sloppy)
 	  end,
     %% FIXME: why is not port used?
-    _Port = if Url#url.port == undefined ->
+    _Port = if Url#url.port =:= undefined ->
 		    case Url#url.scheme of
 			undefined -> 80;
 			http      -> 80;
@@ -440,22 +440,22 @@ send(Socket, Method, URI, Version, H, Body, Proxy) ->
 		    Url#url.port
 	    end,
     H1 = 
-	if H#http_chdr.host == undefined ->
+	if H#http_chdr.host =:= undefined ->
 		H#http_chdr { host = Url#url.host };
 	   true ->
 		H
 	end,
     H2 = if is_binary(Body), size(Body) > 0,
-	    H1#http_chdr.content_length == undefined ->
+	    H1#http_chdr.content_length =:= undefined ->
 		 H1#http_chdr { content_length = size(Body) };
 	    is_list(Body), Body =/= [],
-	    H1#http_chdr.content_length == undefined ->
+	    H1#http_chdr.content_length =:= undefined ->
 		 H1#http_chdr { content_length = lists:flatlength(Body) };
 	    true ->
 		 H1
 	 end,
-    H3 = if Version == {1,0}, 
-	    H1#http_chdr.connection == undefined ->
+    H3 = if Version =:= {1,0}, 
+	    H1#http_chdr.connection =:= undefined ->
 		 H2#http_chdr { connection = "keep-alive" };
 	    true ->
 		 H2
@@ -480,7 +480,7 @@ send_chunk(Socket, Chunk) when is_binary(Chunk) ->
 	    ChunkSize = erlang:integer_to_list(Sz,16),
 	    ChunkExt = "",
 	    exo_socket:send(Socket, [ChunkSize,ChunkExt,?CRNL,Chunk,?CRNL]);
-       Sz == 0 ->
+       Sz =:= 0 ->
 	    ok
     end.
 
@@ -541,7 +541,8 @@ recv_body(S, R) ->
 
 recv_body(S, Request, Timeout) when is_record(Request, http_request) ->
     Method = Request#http_request.method,
-    if Method == 'POST' ->
+    if Method =:= 'POST';
+       Method =:= 'PUT' ->
 	    H = Request#http_request.headers,
 	    case Request#http_request.version of
 		{0,9} ->
@@ -639,7 +640,7 @@ recv_body_chunk(S, Acc, Timeout) ->
 	    ?dbg("CHUNK-Line: ~p\n", [Line]),
 	    {ChunkSize,_Ext} = chunk_size(Line),
 	    ?dbg("CHUNK: ~w\n", [ChunkSize]),
-	    if ChunkSize == 0 ->
+	    if ChunkSize =:= 0 ->
 		    exo_socket:setopts(S, [{packet,httph}]),
 		    case recv_chunk_trailer(S, [], Timeout) of
 			{ok,_TR} ->
@@ -782,7 +783,7 @@ format_request(Method, Url, Version, Proxy) ->
      end,
      " ",
      if is_record(Url, url) ->
-	     if Proxy == true -> 
+	     if Proxy =:= true -> 
 		     exo_url:format(Url);
 		true ->
 		     exo_url:format_path(Url)
@@ -851,8 +852,8 @@ url_encode([C|T]) ->
     if C >= $a, C =< $z ->  [C|url_encode(T)];
        C >= $A, C =< $Z ->  [C|url_encode(T)];
        C >= $0, C =< $9 ->  [C|url_encode(T)];
-       C == $\s         ->  [$+|url_encode(T)];
-       C == $_; C == $.; C == $-; C == $/; C == $: -> % FIXME: more..
+       C =:= $\s         ->  [$+|url_encode(T)];
+       C =:= $_; C =:= $.; C =:= $-; C =:= $/; C =:= $: -> % FIXME: more..
 	    [C|url_encode(T)];       
        true ->
 	    case erlang:integer_to_list(C, 16) of
@@ -1049,10 +1050,10 @@ chunk_size([H|Hs], N) ->
 	    chunk_size(Hs, (N bsl 4)+((H-$a)+10));
 	H >= $A, H =< $F ->
 	    chunk_size(Hs, (N bsl 4)+((H-$A)+10));
-	H == $\r -> {N, ""};
-	H == $\n -> {N, ""};
-	H == $\s -> {N, Hs};
-	H == $;  -> {N, [H|Hs]}
+	H =:= $\r -> {N, ""};
+	H =:= $\n -> {N, ""};
+	H =:= $\s -> {N, Hs};
+	H =:= $;  -> {N, [H|Hs]}
     end;
 chunk_size([], N) -> 
     {N, ""}.
