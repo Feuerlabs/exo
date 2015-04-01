@@ -262,10 +262,19 @@ response(S, Connection, Status, Phrase, Body) ->
 				ok |
 				{error, Reason::term()}.
 response(S, Connection, Status, Phrase, Body, Opts) ->
-    ContentType = opt(content_type, Opts, "text/plain"),
+    {Content_type, Opts1} = optd(content_type, Opts, "text/plain"),
+    {Set_cookie, Opts2} = optd(set_cookie, Opts1, undefined),
+    {Transfer_encoding,Opts3} = optd(transfer_encoding, Opts2, undefined),
+    {Location,Opts4} = optd(location, Opts3, undefined),
+
     H = #http_shdr { connection = Connection,
 		     content_length = content_length(Body),
-		     content_type = ContentType },
+		     content_type = Content_type,
+		     set_cookie = Set_cookie,
+		     transfer_encoding = Transfer_encoding,
+		     location = Location,
+		     other = Opts4 },
+		     
     R = #http_response { version = {1, 1},
 			 status = Status,
 			 phrase = Phrase,
@@ -283,12 +292,12 @@ content_length(B) when is_binary(B) ->
 content_length(L) when is_list(L) ->
     iolist_size(L).
 
+optd(K, L, Def) ->
+    optd(K, L, Def, []).
 
-opt(K, L, Def) ->
-    case lists:keyfind(K, 1, L) of
-	{_, V} -> V;
-	false  -> Def
-    end.
+optd(K, [{K,V}|L], _Def, Acc) -> {V, lists:reverse(Acc)++L};
+optd(K, [Kv|L], Def, Acc) -> optd(K, L, Def, [Kv|Acc]);
+optd(_K, [], Def, Acc) -> {Def, lists:reverse(Acc)}.
 
 %% @private
 handle_http_request(Socket, Request, Body) ->
