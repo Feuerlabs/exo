@@ -63,6 +63,8 @@
 	 url_encode/1,
 	 make_headers/2
 	]).
+-export([url_decode/1,
+	 parse_query/1]).
 
 -import(lists, [reverse/1]).
 
@@ -833,6 +835,27 @@ format_query([Item|Vs]) ->
 format_query([]) ->
     [].
 
+parse_query(Cs) ->
+   [case string:tokens(Kv,"=") of
+	[Key0,Value0] ->
+	    Key1 = url_decode(Key0),
+	    Value1 = url_decode(Value0),
+	    try list_to_integer(trim(Value1)) of
+		Value -> {Key1, Value}
+	    catch
+		error:_ -> {Key1, Value1}
+	    end;
+	[Key0] ->
+	    {url_decode(Key0),true}
+    end || Kv <- string:tokens(Cs, "&")].
+
+trim(Cs) ->
+    reverse(trim_(reverse(trim_(Cs)))).
+
+trim_([$\s|Cs]) -> trim_(Cs);
+trim_([$\t|Cs]) -> trim_(Cs);
+trim_(Cs) -> Cs.
+
 %%
 %% Encode basic authorization
 %%
@@ -863,6 +886,13 @@ url_encode([C|T]) ->
     end;
 url_encode([]) ->
     [].
+
+url_decode([$%,C1,C2|T]) ->
+    C = list_to_integer([C1,C2], 16),
+    [C | url_decode(T)];
+url_decode([$+|T]) -> [$\s|url_decode(T)];
+url_decode([C|T]) -> [C|url_decode(T)];
+url_decode([]) -> [].
 
 to_list(X) when is_integer(X) -> integer_to_list(X);
 to_list(X) when is_atom(X) -> atom_to_list(X);
