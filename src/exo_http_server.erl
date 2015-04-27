@@ -266,9 +266,13 @@ response(S, Connection, Status, Phrase, Body, Opts) ->
     {Set_cookie, Opts2} = optd(set_cookie, Opts1, undefined),
     {Transfer_encoding,Opts3} = optd(transfer_encoding, Opts2, undefined),
     {Location,Opts4} = optd(location, Opts3, undefined),
-
+    ContentLength = if Transfer_encoding =:= "chunked", Body == "" ->
+			    undefined;
+		       true ->
+			    content_length(Body)
+		    end,
     H = #http_shdr { connection = Connection,
-		     content_length = content_length(Body),
+		     content_length = ContentLength,
 		     content_type = Content_type,
 		     set_cookie = Set_cookie,
 		     transfer_encoding = Transfer_encoding,
