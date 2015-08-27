@@ -61,16 +61,8 @@
 		   {ok, ChildPid::pid()} |
 		   {error, Reason::term()}.
 
-start(Port, ServerOptions) ->
-    ?debug("exo_http_server: start: port ~p, server options ~p",
-	   [Port, ServerOptions]),
-    Dir = code:priv_dir(exo),
-    exo_socket_server:start(Port, [tcp,probe_ssl,http],
-			    [{active,once},{reuseaddr,true},
-			     {verify, verify_none},
-			     {keyfile, filename:join(Dir, "host.key")},
-			     {certfile, filename:join(Dir, "host.cert")}],
-			    ?MODULE, ServerOptions).
+start(Port, Options) ->
+    do_start(start, Port, Options).
 
 %%-----------------------------------------------------------------------------
 %% @doc
@@ -85,16 +77,22 @@ start(Port, ServerOptions) ->
 			{ok, ChildPid::pid()} |
 			{error, Reason::term()}.
 
-start_link(Port, ServerOptions) ->
-    ?debug("exo_http_server: start: port ~p, server options ~p",
-	   [Port, ServerOptions]),
+start_link(Port, Options) ->
+    do_start(start_link, Port, Options).
+
+
+do_start(Start, Port, Options) ->
+    ?debug("exo_http_server: ~w: port ~p, server options ~p",
+	   [Start, Port, Options]),
+    {ServerOptions,Options1} = opts_take([request_handler,access],Options),
     Dir = code:priv_dir(exo),
-    exo_socket_server:start_link(Port, [tcp,probe_ssl,http],
-				 [{active,once},{reuseaddr,true},
-				  {verify, verify_none},
-				  {keyfile, filename:join(Dir, "host.key")},
-				  {certfile, filename:join(Dir, "host.cert")}],
-				 ?MODULE, ServerOptions).
+    exo_socket_server:Start(Port, [tcp,probe_ssl,http],
+			    [{active,once},{reuseaddr,true},
+			     {verify, verify_none},
+			     {keyfile, filename:join(Dir, "host.key")},
+			     {certfile, filename:join(Dir, "host.cert")} |
+			     Options1],
+			    ?MODULE, ServerOptions).
 
 %%-----------------------------------------------------------------------------
 %% @doc
@@ -262,10 +260,10 @@ response(S, Connection, Status, Phrase, Body) ->
 				ok |
 				{error, Reason::term()}.
 response(S, Connection, Status, Phrase, Body, Opts) ->
-    {Content_type, Opts1} = optd(content_type, Opts, "text/plain"),
-    {Set_cookie, Opts2} = optd(set_cookie, Opts1, undefined),
-    {Transfer_encoding,Opts3} = optd(transfer_encoding, Opts2, undefined),
-    {Location,Opts4} = optd(location, Opts3, undefined),
+    {Content_type, Opts1} = opt_take(content_type, Opts, "text/plain"),
+    {Set_cookie, Opts2} = opt_take(set_cookie, Opts1, undefined),
+    {Transfer_encoding,Opts3} = opt_take(transfer_encoding, Opts2, undefined),
+    {Location,Opts4} = opt_take(location, Opts3, undefined),
     ContentLength = if Transfer_encoding =:= "chunked", Body == "" ->
 			    undefined;
 		       true ->
@@ -296,12 +294,26 @@ content_length(B) when is_binary(B) ->
 content_length(L) when is_list(L) ->
     iolist_size(L).
 
-optd(K, L, Def) ->
-    optd(K, L, Def, []).
+%% return value or defaule and the option list without the key
+opt_take(K, L, Def) ->
+    case lists:keytake(K, 1, L) of
+	{value,{_,V},L1} -> {V,L1};
+	false -> {Def,L}
+    end.
 
-optd(K, [{K,V}|L], _Def, Acc) -> {V, lists:reverse(Acc)++L};
-optd(K, [Kv|L], Def, Acc) -> optd(K, L, Def, [Kv|Acc]);
-optd(_K, [], Def, Acc) -> {Def, lists:reverse(Acc)}.
+%% return a option list of value from Ks remove the keys found
+opts_take(Ks, L) ->
+    opts_take_(Ks, L, []).
+
+opts_take_([K|Ks], L, Acc) ->
+    case lists:keytake(K, 1, L) of
+	{value,Kv,L1} ->
+	    opts_take_(Ks, L1, [Kv|Acc]);
+	false ->
+	    opts_take_(Ks, L, Acc)
+    end;
+opts_take_([], L, Acc) ->
+    {lists:reverse(Acc), L}.
 
 %% @private
 handle_http_request(Socket, Request, Body) ->
