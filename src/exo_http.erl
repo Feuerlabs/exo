@@ -189,8 +189,8 @@ wpost_multi_body(Req, Data) ->
     {Boundary,Req1} = 
 	case string:str(Ct0, "boundary=") of
 	    0 ->
-		{MS,S,US} = now(),
-		Bnd = integer_to_list((1000000*(1000000*MS+S) + US)),
+		<<Rnd64:64>> = crypto:rand_bytes(8),
+		Bnd = integer_to_list(Rnd64),
 		Ct1 = H#http_chdr.content_type ++ 
 		    "; boundary=\""++Bnd ++"\"",
 		H1 = set_chdr('Content-Type', Ct1, H),
@@ -430,17 +430,6 @@ send(Socket, Method, URI, Version, H, Body, Proxy) ->
     Url = if is_record(URI, url) -> URI;
 	     is_list(URI) -> exo_url:parse(URI, sloppy)
 	  end,
-    %% FIXME: why is not port used?
-    _Port = if Url#url.port =:= undefined ->
-		    case Url#url.scheme of
-			undefined -> 80;
-			http      -> 80;
-			https     -> 443;
-			ftp       -> 21
-		    end;
-	       true ->
-		    Url#url.port
-	    end,
     H1 = 
 	if H#http_chdr.host =:= undefined ->
 		H#http_chdr { host = Url#url.host };
