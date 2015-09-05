@@ -30,7 +30,7 @@
 -define(CR,   "\r").
 -endif.
 
--record(http_request, 
+-record(http_request,
 	{
 	  method,    %% 'GET' 'POST' ...
 	  uri,       %% #url | string path

@@ -19,7 +19,7 @@
 -record(url,
 	{
 	  scheme,
-	  host, 
+	  host,
 	  port,            %% undefined means not set
 	  path = "",
 	  querypart = ""

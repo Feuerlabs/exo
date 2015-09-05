@@ -340,7 +340,7 @@ handle_socket_data(Data, State) ->
     handle_module_result(ModResult, State).
 
 handle_module_result({ok,CSt1}, State) ->
-    if State#state.active == once ->
+    if State#state.active =:= once ->
 	    exo_socket:setopts(State#state.socket, [{active,once}]);
        true ->
 	    ok

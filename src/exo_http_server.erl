@@ -20,9 +20,9 @@
 -behaviour(exo_socket_server).
 
 %% exo_socket_server callbacks
--export([init/2, 
-	 data/3, 
-	 close/2, 
+-export([init/2,
+	 data/3,
+	 close/2,
 	 error/3]).
 
 -export([control/4]).
@@ -31,11 +31,21 @@
 -include("exo_socket.hrl").
 -include("exo_http.hrl").
 
+-define(Q, $\").
+
+-type path() :: string().
+-type user() :: binary().
+-type password() :: binary().
+-type realm() :: string().
+
 -record(state,
 	{
 	  request,
 	  response,
-	  access = [],
+	  authorized = false :: boolean(),
+	  private_key = "" :: string(),
+	  access = [] :: [{basic,path(),user(),password(),realm()} |
+			  {digest,path(),user(),password(),realm()}],
 	  request_handler
 	}).
 
@@ -51,13 +61,13 @@
 %%-----------------------------------------------------------------------------
 %% @doc
 %%  Starts a socket server on port Port with server options ServerOpts
-%% that are sent to the server when a connection is established, 
+%% that are sent to the server when a connection is established,
 %% i.e init is called.
 %%
 %% @end
 %%-----------------------------------------------------------------------------
--spec start(Port::integer(), 
-	    ServerOptions::list({Option::atom(), Value::term()})) -> 
+-spec start(Port::integer(),
+	    ServerOptions::list({Option::atom(), Value::term()})) ->
 		   {ok, ChildPid::pid()} |
 		   {error, Reason::term()}.
 
@@ -67,13 +77,13 @@ start(Port, Options) ->
 %%-----------------------------------------------------------------------------
 %% @doc
 %%  Starts and links a socket server on port Port with server options ServerOpts
-%% that are sent to the server when a connection is established, 
+%% that are sent to the server when a connection is established,
 %% i.e init is called.
 %%
 %% @end
 %%-----------------------------------------------------------------------------
--spec start_link(Port::integer(), 
-		 ServerOptions::list({Option::atom(), Value::term()})) -> 
+-spec start_link(Port::integer(),
+		 ServerOptions::list({Option::atom(), Value::term()})) ->
 			{ok, ChildPid::pid()} |
 			{error, Reason::term()}.
 
@@ -84,7 +94,8 @@ start_link(Port, Options) ->
 do_start(Start, Port, Options) ->
     ?debug("exo_http_server: ~w: port ~p, server options ~p",
 	   [Start, Port, Options]),
-    {ServerOptions,Options1} = opts_take([request_handler,access],Options),
+    {ServerOptions,Options1} = opts_take([request_handler,access,private_key],
+					 Options),
     Dir = code:priv_dir(exo),
     exo_socket_server:Start(Port, [tcp,probe_ssl,http],
 			    [{active,once},{reuseaddr,true},
@@ -100,8 +111,8 @@ do_start(Start, Port, Options) ->
 %%
 %% @end
 %%-----------------------------------------------------------------------------
--spec init(Socket::#exo_socket{}, 
-	   ServerOptions::list({Option::atom(), Value::term()})) -> 
+-spec init(Socket::#exo_socket{},
+	   ServerOptions::list({Option::atom(), Value::term()})) ->
 		  {ok, State::#state{}}.
 
 init(Socket, Options) ->
@@ -110,8 +121,9 @@ init(Socket, Options) ->
 	   [_IP, _Port, Options]),
     Access = proplists:get_value(access, Options, []),
     Module = proplists:get_value(request_handler, Options, undefined),
-    {ok, #state{ access = Access, request_handler = Module}}.    
-
+    PrivateKey = proplists:get_value(private_key, Options, ""),
+    {ok, #state{ access = Access, private_key=PrivateKey,
+		 request_handler = Module}}.
 
 %% To avoid a compiler warning. Should we actually support something here?
 %%-----------------------------------------------------------------------------
@@ -120,8 +132,8 @@ init(Socket, Options) ->
 %%
 %% @end
 %%-----------------------------------------------------------------------------
--spec control(Socket::#exo_socket{}, 
-	      Request::term(), From::term(), State::#state{}) -> 
+-spec control(Socket::#exo_socket{},
+	      Request::term(), From::term(), State::#state{}) ->
 		     {ignore, State::#state{}}.
 
 control(_Socket, _Request, _From, State) ->
@@ -133,9 +145,9 @@ control(_Socket, _Request, _From, State) ->
 %%
 %% @end
 %%-----------------------------------------------------------------------------
--spec data(Socket::#exo_socket{}, 
+-spec data(Socket::#exo_socket{},
 	   Data::term(),
-	   State::#state{}) -> 
+	   State::#state{}) ->
 		  {ok, NewState::#state{}} |
 		  {stop, {error, Reason::term()}, NewState::#state{}}.
 
@@ -151,7 +163,7 @@ data(Socket, Data, State) ->
 		Error ->
 		    {stop, Error, State}
 	    end;
-	{http_error, ?CRNL} -> 
+	{http_error, ?CRNL} ->
 	    {ok, State};
 	{http_error, ?NL} ->
 	    {ok, State};
@@ -168,8 +180,8 @@ data(Socket, Data, State) ->
 %%
 %% @end
 %%-----------------------------------------------------------------------------
--spec close(Socket::#exo_socket{}, 
-	    State::#state{}) -> 
+-spec close(Socket::#exo_socket{},
+	    State::#state{}) ->
 		   {ok, NewState::#state{}}.
 
 close(_Socket, State) ->
@@ -185,32 +197,176 @@ close(_Socket, State) ->
 %%-----------------------------------------------------------------------------
 -spec error(Socket::#exo_socket{},
 	    Error::term(),
-	    State::#state{}) -> 
+	    State::#state{}) ->
 		   {stop, {error, Reason::term()}, NewState::#state{}}.
 
 error(_Socket,Error,State) ->
     ?debug("exo_http_serber: error = ~p\n", [Error]),
-    {stop, Error, State}.    
+    {stop, Error, State}.
 
 
 handle_request(Socket, R, State) ->
-    ?debug("exo_http_server: request = ~s\n", 
+    ?debug("exo_http_server: request = ~s\n",
 	 [[exo_http:format_request(R),?CRNL,
 	   exo_http:format_hdr(R#http_request.headers),
 	   ?CRNL]]),
     case exo_http:recv_body(Socket, R) of
 	{ok, Body} ->
-	    handle_body(Socket, R, Body, State);
+	    case handle_auth(Socket, R, Body, State) of
+		ok ->
+		    handle_body(Socket, R, Body, State);
+		{required,AuthenticateValue,State} ->
+		    response(Socket,undefined, 401, "Unauthorized", "",
+			     [{'WWW-Authenticate', AuthenticateValue}]),
+		    {ok,State}
+	    end;
+
 	{error, closed} ->
 	    {stop, normal,State};
 	Error ->
 	    {stop, Error, State}
     end.
-	    
+
+handle_auth(_Socket, _Request, _Body, State) when State#state.authorized ->
+    ok;
+handle_auth(Socket, Request, Body, State) when not State#state.authorized ->
+    Access = State#state.access,
+    if Access =:= [] ->
+	    ok;
+       true ->
+	    Header = Request#http_request.headers,
+	    Autorization = get_authorization(Header#http_chdr.authorization),
+	    ?debug("authorization = ~p", [Autorization]),
+	    case match_access(Request#http_request.uri, Access) of
+		[Cred={basic,_Path,_User,_Password,_Realm}|_] ->
+		    ?debug("cred = ~p", [Cred]),
+		    handle_basic_auth(Socket, Request, Body, Autorization,
+				      Cred, State);
+		[Cred={digest,_Path,_User,_Password,_Realm}|_] ->
+		    handle_digest_auth(Socket, Request, Body, Autorization,
+				       Cred, State);
+		[] -> ok
+	    end
+    end.
+
+handle_basic_auth(_Socket, _Request, _Body, {basic,AuthParams},
+		  _Cred={basic,_Path,User,Password,Realm}, State) ->
+    AuthUser =  proplists:get_value(<<"user">>, AuthParams),
+    AuthPassword = proplists:get_value(<<"password">>, AuthParams),
+    if AuthUser =:= User, AuthPassword =:= Password ->
+	    ok;
+       true ->
+	    {required, ["Basic realm=",?Q,Realm,?Q], State}
+    end;
+handle_basic_auth(_Socket, _Request, _Body, _,
+		  _Cred={basic,_Path,_User,_Password,Realm}, State) ->
+    {required, ["Basic realm=",?Q,Realm,?Q], State}.
+
+
+handle_digest_auth(_Socket, Request, _Body, {digest,AuthParams},
+		   Cred={digest,_Path,_User,_Password,Realm}, State) ->
+    Response = proplists:get_value(<<"response">>,AuthParams,""),
+    Nonce = proplists:get_value(<<"nonce">>,AuthParams,""),
+    DigestUriValue = proplists:get_value(<<"uri">>,AuthParams,""),
+    %% FIXME! Verify Nonce!!!
+    A1 = a1(Cred),
+    %% ?debug("A1 = \"~s\"", [A1]),
+    HA1 = hex(crypto:md5(A1)),
+    A2 = a2(Request#http_request.method, DigestUriValue),
+    %% ?debug("A2 = \"~s\"", [A2]),
+    HA2 = hex(crypto:md5(A2)),
+    Digest = hex(kd(HA1, Nonce++":"++HA2)),
+    %% ?debug("Digest = \"~s\"", [Digest]),
+    if Digest =:= Response ->
+	    ok;
+       true ->
+	    Nonce1 = nonce_value(Request, State),
+	    {required, ["Digest realm=",?Q,Realm,?Q," ",
+			"nonce=",?Q,Nonce1,?Q], State}
+    end;
+handle_digest_auth(_Socket, Request, _Body, _,
+		   _Cred={digest,_Path,_User,_Password,Realm}, State) ->
+    Nonce = nonce_value(Request, State),
+    {required, ["Digest realm=",?Q,Realm,?Q," ",
+		"nonce=",?Q,Nonce,?Q], State}.
+
+nonce_value(Request, State) ->
+    Header = Request#http_request.headers,
+    ETag = unq(proplists:get_value('ETag',Header#http_chdr.other,"")),
+    T = now64(),
+    TimeStamp = hex(<<T:64>>),
+    hex(crypto:md5([TimeStamp,":",ETag,":",State#state.private_key])).
+
+a1({_,_Path,User,Password,Realm}) ->
+    iolist_to_binary([User,":",Realm,":",Password]).
+
+a2(Method, Uri) ->
+    iolist_to_binary([atom_to_list(Method),":",Uri]).
+
+kd(Secret, Data) ->
+    crypto:md5([Secret,":",Data]).
+
+%% convert binary to ASCII hex
+hex(Bin) ->
+    [ element(X+1, {$0,$1,$2,$3,$4,$5,$6,$7,$8,$9,$a,$b,$c,$d,$e,$f}) ||
+	<<X:4>> <= Bin ].
+
+now64() ->
+    {M,S,Us} = now(),
+    (M*1000000+S)*1000000+Us.
+
+match_access(Url, Access) ->
+    match_access(Url, Access, []).
+
+match_access(Url, [A={_Type,Path,_U,_P,_R}|Access], Acc) ->
+    case lists:prefix(Path, Url#url.path) of
+	true ->
+	    match_access(Url, Access, [A|Acc]);
+	false ->
+	    match_access(Url, Access, Acc)
+    end;
+match_access(_Url, [], Acc) ->
+    %% find the access with the longest path match
+    lists:sort(
+      fun({_,Path1,_,_,_},{_,Path2,_,_,_}) ->
+	      length(Path1) > length(Path2)
+      end, Acc).
+
+
+%% Read and parse Authorization header value
+get_authorization(undefined) ->
+    {none,[]};
+get_authorization([]) ->
+    {none,[]};
+get_authorization([$\s|Cs]) ->
+    get_authorization(Cs);
+get_authorization("Basic "++Cs) ->
+    [User,Password] = binary:split(base64:decode(Cs), <<":">>),
+    {basic, [{<<"user">>,User}, {<<"password">>, Password}]};
+get_authorization("Digest "++Cs) ->
+    {digest, get_params(list_to_binary(Cs))}.
+
+get_params(Bin) ->
+    Ps = binary:split(Bin, <<", ">>, [global]),
+    [ case binary:split(P, <<"=">>) of
+	  [K,V] -> {K,unq(V)};
+	  [K] -> {K,true}
+      end || P <- Ps ].
+
+%% "unquote" a string or a binary
+unq(String) when is_binary(String) -> unq(binary_to_list(String));
+unq([$\s|Cs]) -> unq(Cs);
+unq([?Q|Cs]) -> unq_(Cs);
+unq(Cs) -> Cs.
+
+unq_([?Q|_]) -> [];
+unq_([C|Cs]) -> [C|unq_(Cs)];
+unq_([]) -> [].
+
 handle_body(Socket, Request, Body, State) ->
     RH = State#state.request_handler,
     {M, F, As} = request_handler(RH,Socket, Request, Body),
-    ?debug("exo_http_server: calling ~p with -BODY:\n~s\n-END-BODY\n", 
+    ?debug("exo_http_server: calling ~p with -BODY:\n~s\n-END-BODY\n",
 	   [RH, Body]),
     case apply(M, F, As) of
 	ok -> {ok, State};
@@ -234,11 +390,11 @@ request_handler({Module, Function, XArgs}, Socket, Request, Body) ->
 %%
 %% @end
 %%-----------------------------------------------------------------------------
--spec response(Socket::#exo_socket{}, 
+-spec response(Socket::#exo_socket{},
 	      Connection::string() | undefined,
 	      Status::integer(),
 	      Phrase::string(),
-	      Body::string()) -> 
+	      Body::string()) ->
 				ok |
 				{error, Reason::term()}.
 
@@ -251,12 +407,12 @@ response(S, Connection, Status, Phrase, Body) ->
 %%
 %% @end
 %%-----------------------------------------------------------------------------
--spec response(Socket::#exo_socket{}, 
+-spec response(Socket::#exo_socket{},
 	      Connection::string() | undefined,
 	      Status::integer(),
 	      Phrase::string(),
 	      Body::string(),
-	      Opts::list()) -> 
+	      Opts::list()) ->
 				ok |
 				{error, Reason::term()}.
 response(S, Connection, Status, Phrase, Body, Opts) ->
@@ -276,7 +432,7 @@ response(S, Connection, Status, Phrase, Body, Opts) ->
 		     transfer_encoding = Transfer_encoding,
 		     location = Location,
 		     other = Opts4 },
-		     
+
     R = #http_response { version = {1, 1},
 			 status = Status,
 			 phrase = Phrase,
@@ -328,16 +484,19 @@ handle_http_request(Socket, Request, Body) ->
 	    response(Socket, undefined, 200, "OK", "OK"),
 	    ok;
        true ->
-	    response(Socket, undefined, 404, "Not Found", 
+	    response(Socket, undefined, 404, "Not Found",
 		     "Object not found"),
 	    ok
     end.
 
 test() ->
     Dir = code:priv_dir(exo),
+    Access = [],
+%%    Access = [{basic,"/foo",<<"user">>,<<"password">>,"world"},
+%%	      {digest,"/test",<<"test">>,<<"password">>,"region"}],
     exo_socket_server:start(9000, [tcp,probe_ssl,http],
 			    [{active,once},{reuseaddr,true},
 			     {verify, verify_none},
 			     {keyfile, filename:join(Dir, "host.key")},
 			     {certfile, filename:join(Dir, "host.cert")}],
-			    ?MODULE, []).
+			    ?MODULE, [{access,Access}]).
