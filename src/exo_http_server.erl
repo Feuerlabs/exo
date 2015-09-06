@@ -264,7 +264,7 @@ handle_basic_auth(_Socket, _Request, _Body, _,
 
 
 handle_digest_auth(_Socket, Request, _Body, {digest,AuthParams},
-		   Cred={digest,_Path,_User,_Password,Realm}, State) ->
+		   Cred={digest,_Path,_User,_Password,_Realm}, State) ->
     Response = proplists:get_value(<<"response">>,AuthParams,""),
     Nonce = proplists:get_value(<<"nonce">>,AuthParams,""),
     DigestUriValue = proplists:get_value(<<"uri">>,AuthParams,""),
@@ -280,14 +280,16 @@ handle_digest_auth(_Socket, Request, _Body, {digest,AuthParams},
     if Digest =:= Response ->
 	    ok;
        true ->
-	    Nonce1 = nonce_value(Request, State),
-	    {required, ["Digest realm=",?Q,Realm,?Q," ",
-			"nonce=",?Q,Nonce1,?Q], State}
+	    digest_required(Request, Cred, State)
     end;
 handle_digest_auth(_Socket, Request, _Body, _,
-		   _Cred={digest,_Path,_User,_Password,Realm}, State) ->
+		   Cred={digest,Path,_User,_Password,_Realm}, State) ->
+    digest_required(Request, Cred, State).
+
+digest_required(Request,_Cred={digest,Path,_User,_Password,Realm},State) ->
     Nonce = nonce_value(Request, State),
     {required, ["Digest realm=",?Q,Realm,?Q," ",
+		"url=",?Q,Path,?Q," ",
 		"nonce=",?Q,Nonce,?Q], State}.
 
 nonce_value(Request, State) ->
@@ -491,9 +493,15 @@ handle_http_request(Socket, Request, Body) ->
 
 test() ->
     Dir = code:priv_dir(exo),
-    Access = [],
-%%    Access = [{basic,"/foo",<<"user">>,<<"password">>,"world"},
-%%	      {digest,"/test",<<"test">>,<<"password">>,"region"}],
+    %% Access = [],
+    Access = [{basic,"/foo",<<"user">>,<<"password">>,"world"},
+	      {digest,"/test/a",<<"test">>,<<"a">>,"region"},
+	      {digest,"/test/b",<<"test">>,<<"b">>,"region"},
+	      {digest,"/test/b/c",<<"test">>,<<"c">>,"region"},
+	      {digest,"/test/b/d",<<"test">>,<<"d">>,"region"},
+	      {digest,"/test",<<"test">>,<<"x">>,"region"},
+	      {digest,"/bar",<<"test">>,<<"bar">>,"region"}
+	     ],
     exo_socket_server:start(9000, [tcp,probe_ssl,http],
 			    [{active,once},{reuseaddr,true},
 			     {verify, verify_none},
