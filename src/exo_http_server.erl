@@ -1,3 +1,4 @@
+%%% coding: latin-1
 %%%---- BEGIN COPYRIGHT -------------------------------------------------------
 %%%
 %%% Copyright (C) 2012 Feuerlabs, Inc. All rights reserved.
