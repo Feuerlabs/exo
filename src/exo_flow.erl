@@ -20,6 +20,7 @@
 %%% @doc
 %%%    Server handling flow control.
 %%%
+%%% Implementing token bucket, see wikipedia for further information.
 %%% Created : September 2015 by Malotte W Lönne
 %%% @end
 -module(exo_flow).
@@ -33,7 +34,12 @@
 
 %% functional api
 -export([new/2,
-	 delete/1]).
+	 delete/1,
+	 use/2,
+	 fill/1,
+	 fill_time/2,
+	 wait/2,
+	 fill_wait/2]).
 
 %% gen_server callbacks
 -export([init/1, 
@@ -51,6 +57,18 @@
 
 %% For dialyzer
 -type start_options()::{linked, TrueOrFalse::boolean()}.
+
+%% token bucket
+-record(bucket,
+	{
+	  key::term(),
+	  capacity::float(),    %% max number of tokens in the bucket
+	  rate::float(),        %% bytes per second 
+	  current::float(),     %% current number of tokens
+	  action::atom(),       %% to do when overload
+	  parent::atom(),       %% for group flow
+	  timestamp::integer()  %% last time
+	}).
 
 %% Loop data
 -record(ctx,
@@ -96,7 +114,7 @@ stop() ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Create a new bucket.
+%% Create a pait of new buckets, one for incoming and one for outgoing.
 %%
 %% @end
 %%--------------------------------------------------------------------
@@ -114,8 +132,112 @@ new(Key, Policy) ->
 %%--------------------------------------------------------------------
 -spec delete(Key::term()) -> ok | {error, Error::atom()}.
 
+delete({_Direction, _K} = Key) ->
+    lager:debug("key = ~p", [Key]),
+    ets:delete(?TABLE, Key);
 delete(Key) ->
-    ets:delete(?TABLE, Key).
+    delete({in, Key}),
+    delete({out, Key}).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Use a bucket.
+%% If enough tokens -> ok, otherwise -> {error, Action}.
+%%
+%% @end
+%%--------------------------------------------------------------------
+-spec use(Key::term(), Tokens::number()) -> ok | 
+					    {action, Action::throw | wait} |
+					    {error, Error::atom()}.
+
+use({Direction, _K} = Key, Tokens) 
+  when is_number(Tokens), is_atom(Direction) ->
+    lager:debug("key = ~p, tokens = ~p", [Key, Tokens]),
+    use_tokens(Key, Tokens).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Fills the bucket fill rate with tokens accumulated since last use.
+%% Returns number of tokens in the bucket.
+%%
+%% @end
+%%--------------------------------------------------------------------
+-spec fill(Key::term()) -> {ok, Tokens::number()} |
+			   {error, Error::atom()}.
+
+fill({Direction, _K} = Key) when is_atom(Direction) ->
+    lager:debug("key = ~p", [Key]),
+    case ets:lookup(?TABLE, Key) of
+	[{Key, B}] when is_record(B, bucket) ->
+	   fill_bucket(B);
+	[] ->
+	   {error, unkown_key}
+    end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% How long to wait for the bucket to contain Tokens in seconds.
+%%
+%% @end
+%%--------------------------------------------------------------------
+-spec fill_time(Key::term(), Tokens::number()) -> 
+		       {ok, Secs::number()} |
+		       {error, Error::atom()}.
+
+fill_time({Direction, _K} = Key, Tokens) 
+  when is_number(Tokens), is_atom(Direction) ->
+   lager:debug("key = ~p, tokens = ~p", [Key, Tokens]),
+   case ets:lookup(?TABLE, Key) of
+	[{Key, B}] when is_record(B, bucket) ->
+	   bucket_fill_time(B, Tokens);
+	[] ->
+	    {error, unkown_key}
+    end.
+
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Wait the time needed for the bucket to have enough tokens.
+%% However, does not fill the bucket !!!
+%%
+%% @end
+%%--------------------------------------------------------------------
+-spec wait(Key::term(), Tokens::number()) -> 
+		       ok |
+		       {error, Error::atom()}.
+
+wait({Direction, _K} = Key, Tokens) 
+  when is_number(Tokens), is_atom(Direction) ->
+   lager:debug("key = ~p, tokens = ~p", [Key, Tokens]),
+   case ets:lookup(?TABLE, Key) of
+	[{Key, B}] when is_record(B, bucket) ->
+	   bucket_wait(B, Tokens);
+	[] ->
+	    {error, unkown_key}
+    end.
+	    	    
+%%--------------------------------------------------------------------
+%% @doc
+%% Wait the time needed for the bucket to have enough tokens and
+%% fill the bucket.
+%% Returns number of tokens in the bucket.
+%%
+%% @end
+%%--------------------------------------------------------------------
+-spec fill_wait(Key::term(), Tokens::number()) -> 
+		       {ok, Tokens::number()} |
+		       {error, Error::atom()}.
+
+fill_wait({Direction, _K} = Key, Tokens) 
+  when is_number(Tokens), is_atom(Direction) ->
+   lager:debug("key = ~p, tokens = ~p", [Key, Tokens]),
+   case ets:lookup(?TABLE, Key) of
+	[{Key, B}] when is_record(B, bucket) ->
+	   wait(B, Tokens),
+	   fill(B);
+	[] ->
+	    {error, unkown_key}
+    end.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -251,13 +373,76 @@ add_bucket(_Buckets, _Key, _Policy, []) ->
     {error, unknown_policy};
 add_bucket(Buckets, Key, Policy, [{Policy, Opts} = _P | _Rest]) ->
     lager:debug("policy found ~p.", [_P]),
-    Capacity = proplists:get_value(capacity, Opts),
-    Rate = proplists:get_value(rate, Opts),
-    Parent = proplists:get_value(parent, Opts),
-    ets:insert(Buckets, {Key, Capacity, Rate, Parent}),
+    InOpts = proplists:get_value(in, Opts),
+    add_bucket(Buckets, {in, Key}, InOpts),   
+    OutOpts = proplists:get_value(out, Opts),
+    add_bucket(Buckets, {out, Key}, OutOpts),   
     ok;
 add_bucket(Buckets, Key, Policy, [_Other | Rest]) ->
     add_bucket(Buckets, Key, Policy, Rest).
     
+add_bucket(_Buckets, _Key, undefined) ->
+    ok;
+add_bucket(Buckets, Key, Opts) ->
+    Capacity = proplists:get_value(capacity, Opts),
+    Rate = proplists:get_value(rate, Opts),
+    Parent = proplists:get_value(parent, Opts),
+    Action = proplists:get_value(action, Opts, throw),
+    Bucket = #bucket {key = Key,
+		      capacity  = float(Capacity),
+		      current    = float(Capacity),
+		      rate = float(Rate),
+		      action = Action,
+		      parent = Parent,
+		      timestamp = erlang:system_time(micro_seconds)},
+    lager:debug("bucket ~p created,", [Bucket]),
+    ets:insert(Buckets, {Key, Bucket}).
 
+use_tokens(Key, Tokens) ->
+    case ets:lookup(?TABLE, Key) of
+	[{Key, B=#bucket {current = Current}}] when Tokens =< Current ->
+	    ets:insert(?TABLE, {Key, B#bucket {current = Current - Tokens}}),
+	    ok;
+	[{Key, _B=#bucket {action = Action}}] ->
+	    {action, Action};
+	[] ->
+	    {error, unkown_key}
+    end.
+
+fill_bucket(B) when is_record(B, bucket) ->
+    Now = erlang:system_time(micro_seconds),
+    Current = B#bucket.current,
+    Capacity = B#bucket.capacity,
+    T = if Current < Capacity ->
+		Dt = time_delta(Now, B#bucket.timestamp),
+		New = B#bucket.rate * Dt,
+		erlang:min(Capacity, Current + New);
+	   true ->
+		Current
+		end,
+    ets:insert(?TABLE, {B#bucket.key, B#bucket {current = T, timestamp = Now}}),
+    {ok, T}.
     
+bucket_fill_time(B, Tokens) when is_record(B, bucket) ->
+    Current = B#bucket.current,
+    if Tokens < Current ->
+	    {ok, 0};
+       true ->
+	    Ts = Tokens - Current,  %% tokens to wait for
+	    {ok, Ts / B#bucket.rate}
+    end.
+
+bucket_wait(B, Tokens)  when is_record(B, bucket) ->
+    {ok, Ts} = fill_time(B, Tokens),
+    Tms = Ts*1000,
+    Delay = trunc(Tms),
+    if Delay < Tms ->
+	    timer:sleep(Delay+1);
+       Delay > 0 ->
+	    timer:sleep(Delay);
+       true ->
+	    ok
+    end.
+
+time_delta(T1, T0) ->
+    (T1 - T0) / 1000000.

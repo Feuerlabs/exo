@@ -19,7 +19,8 @@
 %% ===================================================================
 
 start(_StartType, _StartArgs) ->
-    exo_sup:start_link().
+    Opts = application:get_all_env(exo),
+    exo_sup:start_link(Opts).
 
 stop(_State) ->
     ok.

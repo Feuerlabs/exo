@@ -15,8 +15,8 @@
 %%% Created : 22 Aug 2011 by Tony Rogvall <tony@rogvall.se>
 %%%-------------------------------------------------------------------
 -module(exo_socket_session).
-
 -behaviour(gen_server).
+
 
 %% API
 -export([start/3, 
@@ -46,9 +46,7 @@
 	 }).
 
 -include("exo_socket.hrl").
-
 -include("log.hrl").
--define(dbg(F, A), ?debug("~p " ++ F, [self()|A])).
 
 -type exo_socket() :: #exo_socket {}.
 
@@ -115,14 +113,14 @@ init([XSocket, Module, Args]) ->
 %% No 'local' handle_call
 handle_call(Request, From, 
 	    State=#state{module = M, state = MSt, socket = Socket}) ->
-    ?dbg("handle_call: ~p", [Request]),
+    ?debug("~p", [Request]),
     try M:control(Socket, Request, From, MSt) of
 	Result -> 
-	    ?dbg("handle_call: reply ~p", [Result]),
+	    ?debug("reply ~p", [Result]),
 	    mod_reply(Result, From, State)
     catch
 	error:_Error -> 
-	    ?dbg("handle_call: catch reason  ~p", [_Error]),
+	    ?debug("catch reason  ~p", [_Error]),
 	    ret({reply, {error, unknown_call}, State})
     end.
 
@@ -149,13 +147,13 @@ mod_reply({send, Bin, MSt, Timeout}, From, State) ->
     ret({noreply, State1, Timeout});
 mod_reply({stop, Reason, Reply, _MSt}, _From, State) ->
     %% Terminating
-    ?dbg("handle_call: stopping ~p with reason ~p", [self(), Reason]),
+    ?debug("stopping ~p with reason ~p", [self(), Reason]),
     {stop, Reason, Reply, State}.
 
 send_(Bin, From, #state{socket = S, pending = P} = State) ->
     P1 = if P == [] ->
 		 exo_socket:send(S, Bin),
-		 ?dbg("send: bin sent to ~p", [S]),
+		 ?debug("bin sent to ~p", [S]),
 		 [{From,Bin}|P];
 	    true -> P
 	 end,
@@ -174,10 +172,10 @@ send_(Bin, From, #state{socket = S, pending = P} = State) ->
 %% @end
 %%--------------------------------------------------------------------
 handle_cast({activate,Active}, State0) ->
-    ?dbg("activate~n", []),
+    ?debug("activate~n", []),
     try exo_socket:authenticate(State0#state.socket) of
 	{ok, S} ->
-	    ?dbg("authentication done~n", []),
+	    ?debug("authentication done~n", []),
 	    State = State0#state{socket = S},
 	    case apply(State#state.module, init,
 		       [State#state.socket,State#state.args]) of
@@ -189,7 +187,8 @@ handle_cast({activate,Active}, State0) ->
 		    SessionOpts = [{active,Active},{exit_on_close, false}],
 
 		    _Res = exo_socket:setopts(State#state.socket, SessionOpts),
-		    ?dbg("exo_socket:setopts(~w) = ~w\n", [SessionOpts, _Res]),
+		    ?debug("exo_socket: setopts(~w) = ~w\n", 
+			   [SessionOpts, _Res]),
 		    State1 = State#state { active = Active, state = CSt0 },
 		    case Ok of
 			{_, _, Timeout} ->
@@ -222,13 +221,13 @@ handle_cast(_Msg, State) ->
 %%--------------------------------------------------------------------
 handle_info(timeout, State) ->
     exo_socket:shutdown(State#state.socket, write),
-    ?dbg("exo_socket_session: idle_timeout~p~n", [self()]),
+    ?debug("idle_timeout~p~n", [self()]),
     {stop, normal, State};
 handle_info({Tag,Socket,Data0}, State) when 
       %% FIXME: put socket tag in State for correct matching
       (Tag =:= tcp orelse Tag =:= ssl orelse Tag =:= http), 
       Socket =:= (State#state.socket)#exo_socket.socket ->
-    ?dbg("exo_socket_session: got data ~p\n", [{Tag,Socket,Data0}]),
+    ?debug("got data ~p\n", [{Tag,Socket,Data0}]),
     try exo_socket:auth_incoming(State#state.socket, Data0) of
 	<<"reuse%", Rest/binary>> ->
 	    handle_reuse_data(Rest, State);
@@ -242,7 +241,7 @@ handle_info({Tag,Socket,Data0}, State) when
 handle_info({Tag,Socket}, State) when
       (Tag =:= tcp_closed orelse Tag =:= ssl_closed),
       Socket =:= (State#state.socket)#exo_socket.socket ->
-    ?dbg("exo_socket_session: got tag ~p\n", [{Tag,Socket}]),
+    ?debug("got tag ~p\n", [{Tag,Socket}]),
     CSt0 = State#state.state,
     case apply(State#state.module, close, [State#state.socket,CSt0]) of
 	{ok,CSt1} ->
@@ -251,7 +250,7 @@ handle_info({Tag,Socket}, State) when
 handle_info({Tag,Socket,Error}, State) when 
       (Tag =:= tcp_error orelse Tag =:= ssl_error),
       Socket =:= (State#state.socket)#exo_socket.socket ->
-    ?dbg("exo_socket_session: got error ~p\n", [{Tag,Socket,Error}]),
+    ?debug("got error ~p\n", [{Tag,Socket,Error}]),
     CSt0 = State#state.state,
     case apply(State#state.module, error, [State#state.socket,Error,CSt0]) of
 	{ok,CSt1} ->
@@ -261,7 +260,7 @@ handle_info({Tag,Socket,Error}, State) when
     end;
     
 handle_info(_Info, State) ->
-    ?dbg("Got info: ~p\n", [_Info]),
+    ?debug("Got info: ~p\n", [_Info]),
     ret({noreply, State}).
 
 %%--------------------------------------------------------------------
@@ -319,7 +318,7 @@ ret(R) ->
 %% continued from handle_info/2
 handle_reuse_data(Rest, #state{module = M, state = MSt} = State) ->
     Config = decode_reuse_config(Rest),
-    ?dbg("Decoded reuse config: ~p~n"
+    ?debug("Decoded reuse config: ~p~n"
 	 "State = ~p~n", [Config, State]),
     {ok, MSt1} = M:received_reuse_info(Config, MSt),
     State1 = State#state{state = MSt1},
@@ -332,12 +331,16 @@ handle_reuse_data(Rest, #state{module = M, state = MSt} = State) ->
     end,
     ret({noreply, State1}).
 
-handle_socket_data(Data, State) ->
-    CSt0 = State#state.state,
-    ModResult = apply(State#state.module, data, 
-		      [State#state.socket,Data,CSt0]),
-    ?dbg("handle_socket_data: result ~p", [ModResult]),
+handle_socket_data(Data, State=#state {module = M, state = CSt0, socket = S}) ->
+    ModResult = apply(M, data, [S,Data,CSt0]),
+    ?debug("result ~p", [ModResult]),
+    %% maybe_flow_control(S, use, 1), %% Count down
     handle_module_result(ModResult, State).
+
+maybe_flow_control(#exo_socket {flow = undefined}, _F, _T) ->
+    ok;
+maybe_flow_control(#exo_socket {socket = S}, F, T) ->
+    exo_flow:F({in, S},T).
 
 handle_module_result({ok,CSt1}, State) ->
     if State#state.active =:= once ->

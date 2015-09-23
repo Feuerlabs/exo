@@ -34,13 +34,6 @@
 -include("exo_socket.hrl").
 -include("log.hrl").
 
--define(dbg(F, A), ?debug("~p " ++ F, [self()|A])).
-%% -ifdef(debug).
-%% -define(dbg(F, A), io:format((F), (A))).
-%% -else.
-%% -define(dbg(F, A), ok).
-%% -endif.
-
 %%
 %% List of protocols supported
 %%  [tcp]
@@ -62,12 +55,13 @@ listen(Port, Protos=[tcp|_], Opts0) ->
     Opts1 = proplists:expand([{binary, [{mode, binary}]},
 			      {list, [{mode, list}]}], Opts0),
     {TcpOpts, Opts2} = split_options(tcp_listen_options(), Opts1),
-    ?dbg("exo_socket: listen options=~w, other=~w\n", [TcpOpts, Opts2]),
+    ?debug("listen options=~w, other=~w\n", [TcpOpts, Opts2]),
     Active = proplists:get_value(active, TcpOpts, false),
     Mode   = proplists:get_value(mode, TcpOpts, list),
     Packet = proplists:get_value(packet, TcpOpts, 0),
     {_, TcpOpts1} = split_options([active,packet,mode], TcpOpts),
     TcpListenOpts = [{active,false},{packet,0},{mode,binary}|TcpOpts1],
+    Flow = proplists:get_value(flow, Opts2, undefined),
     case gen_tcp:listen(Port, TcpListenOpts) of
 	{ok, L} ->
 	    {ok, #exo_socket { mdata    = gen_tcp,
@@ -78,6 +72,7 @@ listen(Port, Protos=[tcp|_], Opts0) ->
 			       active   = Active,
 			       mode     = Mode,
 			       packet   = Packet,
+			       flow     = Flow,
 			       opts     = Opts2,
 			       tags     = {tcp,tcp_closed,tcp_error}
 			     }};
@@ -106,6 +101,7 @@ connect(Host, Port, Protos=[tcp|_], Opts0, Timeout) ->
     Packet = proplists:get_value(packet, TcpOpts, 0),
     {_, TcpOpts1} = split_options([active,packet,mode], TcpOpts),
     TcpConnectOpts = [{active,false},{packet,0},{mode,binary}|TcpOpts1],
+    Flow = proplists:get_value(flow, Opts2, undefined),
     case gen_tcp:connect(Host, Port, TcpConnectOpts, Timeout) of
 	{ok, S} ->
 	    X = 
@@ -117,6 +113,7 @@ connect(Host, Port, Protos=[tcp|_], Opts0, Timeout) ->
 			      active   = Active,
 			      mode     = Mode,
 			      packet   = Packet,
+			      flow     = Flow,
 			      opts     = Opts2,
 			      tags     = {tcp,tcp_closed,tcp_error}
 			    },
@@ -131,7 +128,7 @@ maybe_auth(X, Opts) ->
 maybe_auth(X, Role, Opts) ->
     case proplists:get_bool(delay_auth, Opts) of
 	true ->
-	    ?dbg("Delaying authentication~n", []),
+	    ?debug("Delaying authentication~n", []),
 	    X;
 	false ->
 	    maybe_auth_(X, Role, Opts)
@@ -143,16 +140,16 @@ maybe_auth_({ok,X}, Role0, Opts) ->
 	    {ok, X};
 	L when is_list(L) ->
 	    Role = proplists:get_value(role, L, Role0),
-	    ?dbg("auth opts = ~p~nRole = ~p~n", [L, Role]),
+	    ?debug("auth opts = ~p~nRole = ~p~n", [L, Role]),
 	    %% Here, we should check if the session is already authenticated
 	    %% Otherwise, initiate user-level authentication.
 	    case lists:keyfind(Role, 1, L) of
 		false -> {ok, X};
 		{_, ROpts} ->
-		    ?dbg("ROpts = ~p~n", [ROpts]),
+		    ?debug("ROpts = ~p~n", [ROpts]),
 		    case lists:keyfind(mod, 1, ROpts) of
 			{_, M} ->
-			    ?dbg("will authenticate (M = ~p~n", [M]),
+			    ?debug("will authenticate (M = ~p~n", [M]),
 			    try preserve_active(
 				  fun() ->
 					  M:authenticate(X, Role, ROpts)
@@ -169,9 +166,9 @@ maybe_auth_({ok,X}, Role0, Opts) ->
 				    {error, Other}
 			    catch
 				error:Err ->
-				    ?dbg("Caught error: ~p~n"
-					 "Trace = ~p~n",
-					 [Err, erlang:get_stacktrace()]),
+				    ?debug("Caught error: ~p~n"
+					   "Trace = ~p~n",
+					   [Err, erlang:get_stacktrace()]),
 				    shutdown(X, write),
 				    {error, einval}
 			    end;
@@ -189,10 +186,10 @@ preserve_active(F, S) ->
     Res.
 
 authenticate(#exo_socket{mauth = undefined} = XS) ->
-    ?dbg("authenticate(~p)~n", [XS]),
+    ?debug("authenticate(~p)~n", [XS]),
     maybe_auth({ok,XS}, XS#exo_socket.opts);
 authenticate(#exo_socket{} = XS) ->
-    ?dbg("No authentication options defined.~n", []),
+    ?debug("No authentication options defined.~n", []),
     {ok, XS}.
 
 auth_incoming(#exo_socket{mauth = undefined}, Data) ->
@@ -207,18 +204,18 @@ auth_incoming(#exo_socket{mauth = M, auth_state = Sa} = X, Data) ->
 
 
 connect_upgrade(X, Protos0, Timeout) ->
-    ?dbg("exo_socket: connect protos=~w\n", [Protos0]),
+    ?debug("connect protos=~w\n", [Protos0]),
     case Protos0 of
 	[ssl|Protos1] ->
 	    Opts = X#exo_socket.opts,
 	    {SSLOpts0,Opts1} = split_options(ssl_connect_opts(),Opts),
 	    {_,SSLOpts} = split_options([ssl_imp], SSLOpts0),
-	    ?dbg("SSL upgrade, options = ~w\n", [SSLOpts]),
-	    ?dbg("exo_socket: before ssl:connect opts=~w\n", 
+	    ?debug("SSL upgrade, options = ~w\n", [SSLOpts]),
+	    ?debug("before ssl:connect opts=~w\n", 
 		 [getopts(X, [active,packet,mode])]),
 	    case ssl_connect(X#exo_socket.socket, SSLOpts, Timeout) of
 		{ok,S1} ->
-		    ?dbg("exo_socket: ssl:connect opt=~w\n", 
+		    ?debug("ssl:connect opt=~w\n", 
 			 [ssl:getopts(S1, [active,packet,mode])]),
 		    X1 = X#exo_socket { socket=S1,
 					mdata = ssl,
@@ -227,7 +224,7 @@ connect_upgrade(X, Protos0, Timeout) ->
 					tags={ssl,ssl_closed,ssl_error}},
 		    connect_upgrade(X1, Protos1, Timeout);
 		Error={error,_Reason} ->
-		    ?dbg("exo_socket: ssl:connect error=~w\n", 
+		    ?debug("ssl:connect error=~w\n", 
 			 [_Reason]),
 		    Error
 	    end;
@@ -240,7 +237,7 @@ connect_upgrade(X, Protos0, Timeout) ->
 	    setopts(X, [{mode,X#exo_socket.mode},
 			{packet,X#exo_socket.packet},
 			{active,X#exo_socket.active}]),
-	    ?dbg("exo_socket: after upgrade opts=~w\n", 
+	    ?debug("after upgrade opts=~w\n", 
 		 [getopts(X, [active,packet,mode])]),
 	    {ok,X}
     end.
@@ -289,6 +286,12 @@ async_socket(Listen, Socket, AuthOpts)
 		    {ok,Mod} = inet_db:lookup_socket(Listen#exo_socket.socket),
 		    inet_db:register_socket(Socket, Mod),
 		    X = Listen#exo_socket { transport=Socket, socket=Socket },
+		    case X#exo_socket.flow of
+			undefined -> 
+			    do_nothing;
+			Flow -> 
+			    ok = exo_flow:new(Socket, Flow)
+		    end,
 		    maybe_auth(
 		      accept_upgrade(X, tl(X#exo_socket.protocol), infinity),
 		      server,
@@ -312,7 +315,7 @@ accept(X, Timeout) when
     accept_upgrade(X, X#exo_socket.protocol, Timeout).
 
 accept_upgrade(X=#exo_socket { mdata = M }, Protos0, Timeout) ->
-    ?dbg("exo_socket: accept protos=~w\n", [Protos0]),
+    ?debug("accept protos=~w\n", [Protos0]),
     case Protos0 of
 	[tcp|Protos1] ->
 	    case M:accept(X#exo_socket.socket, Timeout) of
@@ -326,12 +329,12 @@ accept_upgrade(X=#exo_socket { mdata = M }, Protos0, Timeout) ->
 	    Opts = X#exo_socket.opts,
 	    {SSLOpts0,Opts1} = split_options(ssl_listen_opts(),Opts),
 	    {_,SSLOpts} = split_options([ssl_imp], SSLOpts0),
-	    ?dbg("SSL upgrade, options = ~w\n", [SSLOpts]),
-	    ?dbg("exo_socket: before ssl_accept opt=~w\n", 
+	    ?debug("SSL upgrade, options = ~w\n", [SSLOpts]),
+	    ?debug("before ssl_accept opt=~w\n", 
 		 [getopts(X, [active,packet,mode])]),
 	    case ssl_accept(X#exo_socket.socket, SSLOpts, Timeout) of
 		{ok,S1} ->
-		    ?dbg("exo_socket: ssl_accept opt=~w\n", 
+		    ?debug("ssl_accept opt=~w\n", 
 			 [ssl:getopts(S1, [active,packet,mode])]),
 		    X1 = X#exo_socket{socket=S1,
 				      mdata = ssl,
@@ -340,7 +343,7 @@ accept_upgrade(X=#exo_socket { mdata = M }, Protos0, Timeout) ->
 				      tags={ssl,ssl_closed,ssl_error}},
 		    accept_upgrade(X1, Protos1, Timeout);
 		Error={error,_Reason} ->
-		    ?dbg("exo_socket: ssl:ssl_accept error=~w\n", 
+		    ?debug("ssl:ssl_accept error=~w\n", 
 			 [_Reason]),
 		    Error
 	    end;
@@ -355,7 +358,7 @@ accept_upgrade(X=#exo_socket { mdata = M }, Protos0, Timeout) ->
 	    setopts(X, [{mode,X#exo_socket.mode},
 			{packet,X#exo_socket.packet},
 			{active,X#exo_socket.active}]),
-	    ?dbg("exo_socket: after upgrade opts=~w\n", 
+	    ?debug("after upgrade opts=~w\n", 
 		 [getopts(X, [active,packet,mode])]),
 	    {ok,X}
     end.
@@ -364,32 +367,32 @@ accept_probe_ssl(X=#exo_socket { mdata=M, socket=S,
 				 tags = {TData,TClose,TError}},
 		 Protos,
 		 Timeout) ->
-    ?dbg("exo_socket: accept_probe_ssl protos=~w\n", [Protos]),
+    ?debug("protos=~w\n", [Protos]),
     setopts(X, [{active,once}]),
     receive
 	{TData, S, Data} ->
-	    ?dbg("Accept data=~w\n", [Data]),
+	    ?debug("Accept data=~w\n", [Data]),
 	    case request_type(Data) of
 		ssl ->
-		    ?dbg("request type: ssl\n",[]),
+		    ?debug("request type: ssl\n",[]),
 		    ok = M:unrecv(S, Data),
-		    ?dbg("~w:unrecv(~w, ~w)\n", [M,S,Data]),
+		    ?debug("~w:unrecv(~w, ~w)\n", [M,S,Data]),
 		    %% insert ssl after transport
 		    Protos1 = X#exo_socket.protocol--([probe_ssl|Protos]),
 		    Protos2 = Protos1 ++ [ssl|Protos],
 		    accept_upgrade(X#exo_socket{protocol=Protos2},
 				   [ssl|Protos],Timeout);
 		_ -> %% not ssl
-		    ?dbg("request type: NOT ssl\n",[]),
+		    ?debug("request type: NOT ssl\n",[]),
 		    ok = M:unrecv(S, Data),
-		    ?dbg("~w:unrecv(~w, ~w)\n", [M,S,Data]),
+		    ?debug("~w:unrecv(~w, ~w)\n", [M,S,Data]),
 		    accept_upgrade(X,Protos,Timeout)
 	    end;
 	{TClose, S} ->
-	    ?dbg("accept_probe_ssl: closed\n", []),
+	    ?debug("accept_probe_ssl: closed\n", []),
 	    {error, closed};
 	{TError, S, Error} ->
-	    ?dbg("accept_probe_ssl: error ~w\n", [Error]),
+	    ?debug("accept_probe_ssl: error ~w\n", [Error]),
 	    Error
     end.
 
@@ -421,21 +424,44 @@ request_type(_) ->
 %%
 %% exo_socket wrapper for socket operations
 %%
+close(#exo_socket { mdata = M, socket = S, flow = undefined}) ->
+    M:close(S);
 close(#exo_socket { mdata = M, socket = S}) ->
+    exo_flow:delete(S), %% Delete both incoming and outgoing flow control
     M:close(S).
 
 shutdown(#exo_socket { mdata = M, socket = S}, How) ->
     M:shutdown(S, How).
     
-send(#exo_socket { mdata = M,socket = S, mauth = A,auth_state = Sa} = X, Data) ->
-    if A == undefined ->
-	    M:send(S, Data);
-       true ->
-	    try M:send(S, A:outgoing(Data, Sa))
-	    catch
-		error:_ ->
-		    shutdown(X, write)
-	    end
+send(#exo_socket {flow = undefined} = X, Data) ->
+    send1(X, Data);
+send(#exo_socket {socket = S, flow = _Flow} = X, Data) ->
+    exo_flow:fill({out, S}),
+    case exo_flow:use({out,S}, 1) of
+	ok -> 
+	    send1(X, Data);
+	{action, throw} -> 
+	    lager:warning("Message thrown due to overload protection"),
+	    ok;
+	{action, wait} ->
+	    case exo_flow:fill_time({out, S}, 1) of
+		{ok, WaitTime} when WaitTime > 0 ->
+		    lager:debug("fill_time ~p", [WaitTime]),
+		    timer:sleep(trunc(WaitTime * 1000));
+		_E ->
+		    lager:debug("fill_time error ~p", [_E])
+	    end,
+	    send(X, Data)
+    end.
+	    
+send1(#exo_socket { mdata = M, socket = S, mauth = undefined}, Data) ->
+    M:send(S, Data);
+send1(#exo_socket { mdata = M, socket = S, mauth = A, auth_state = Sa} = X, 
+      Data) ->
+    try M:send(S, A:outgoing(Data, Sa))
+    catch
+	error:_ ->
+	    shutdown(X, write)
     end.
 
 recv(HSocket, Size) ->
