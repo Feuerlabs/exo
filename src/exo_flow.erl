@@ -53,7 +53,8 @@
 -export([dump/0]).
 
 -define(SERVER, ?MODULE). 
--define(TABLE, exo_token_bucket).
+-define(BUCKETS, exo_token_buckets).
+-define(POLICIES, exo_token_policies).
 
 %% For dialyzer
 -type start_options()::{linked, TrueOrFalse::boolean()}.
@@ -74,7 +75,7 @@
 -record(ctx,
 	{
 	  buckets::term(),
-	  policies = []::list()
+	  policies::term()
 	}).
 
 %%%===================================================================
@@ -114,15 +115,22 @@ stop() ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Create a pait of new buckets, one for incoming and one for outgoing.
+%% Create a pair of new buckets, one for incoming and one for outgoing.
 %%
 %% @end
 %%--------------------------------------------------------------------
 -spec new(Key::term(), Policy::atom()) -> ok | {error, Error::atom()}.
 
 new(Key, Policy) ->
-    [{policies, Policies}] = ets:lookup(?TABLE, policies),
-    add_bucket(?TABLE, Key, Policy, Policies).
+    case new_bucket({in, Key}, Policy) of
+	ok ->
+	    case new_bucket({out, Key}, Policy) of
+		ok -> ok;
+		E -> delete({in, Key}), E
+	    end;
+	E ->
+	    E
+    end.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -134,7 +142,7 @@ new(Key, Policy) ->
 
 delete({_Direction, _K} = Key) ->
     lager:debug("key = ~p", [Key]),
-    ets:delete(?TABLE, Key);
+    ets:delete(?BUCKETS, Key);
 delete(Key) ->
     delete({in, Key}),
     delete({out, Key}).
@@ -167,8 +175,8 @@ use({Direction, _K} = Key, Tokens)
 
 fill({Direction, _K} = Key) when is_atom(Direction) ->
     lager:debug("key = ~p", [Key]),
-    case ets:lookup(?TABLE, Key) of
-	[{Key, B}] when is_record(B, bucket) ->
+    case ets:lookup(?BUCKETS, Key) of
+	[B] when is_record(B, bucket) ->
 	   fill_bucket(B);
 	[] ->
 	   {error, unkown_key}
@@ -187,8 +195,8 @@ fill({Direction, _K} = Key) when is_atom(Direction) ->
 fill_time({Direction, _K} = Key, Tokens) 
   when is_number(Tokens), is_atom(Direction) ->
    lager:debug("key = ~p, tokens = ~p", [Key, Tokens]),
-   case ets:lookup(?TABLE, Key) of
-	[{Key, B}] when is_record(B, bucket) ->
+   case ets:lookup(?BUCKETS, Key) of
+	[B] when is_record(B, bucket) ->
 	   bucket_fill_time(B, Tokens);
 	[] ->
 	    {error, unkown_key}
@@ -209,7 +217,7 @@ fill_time({Direction, _K} = Key, Tokens)
 wait({Direction, _K} = Key, Tokens) 
   when is_number(Tokens), is_atom(Direction) ->
    lager:debug("key = ~p, tokens = ~p", [Key, Tokens]),
-   case ets:lookup(?TABLE, Key) of
+   case ets:lookup(?BUCKETS, Key) of
 	[{Key, B}] when is_record(B, bucket) ->
 	   bucket_wait(B, Tokens);
 	[] ->
@@ -231,8 +239,8 @@ wait({Direction, _K} = Key, Tokens)
 fill_wait({Direction, _K} = Key, Tokens) 
   when is_number(Tokens), is_atom(Direction) ->
    lager:debug("key = ~p, tokens = ~p", [Key, Tokens]),
-   case ets:lookup(?TABLE, Key) of
-	[{Key, B}] when is_record(B, bucket) ->
+   case ets:lookup(?BUCKETS, Key) of
+	[B] when is_record(B, bucket) ->
 	   wait(B, Tokens),
 	   fill(B);
 	[] ->
@@ -267,10 +275,14 @@ dump() ->
 
 init(Args) ->
     lager:info("args = ~p,\n pid = ~p\n", [Args, self()]),
-    Tab = ets:new(?TABLE, [named_table, public, ordered_set]),
-    Policies = application:get_env(exo, policies, []),
-    ets:insert(Tab, {policies, Policies}),
-    {ok, #ctx {buckets = Tab}}.
+    BTab = ets:new(?BUCKETS, [named_table, public, {keypos, #bucket.key}]),
+    PTab = ets:new(?POLICIES, [named_table, public, {keypos, #bucket.key}]),
+    lists:foreach(fun({PolicyName, Opts}) ->
+			  add_template(PolicyName, in, Opts),
+			  add_template(PolicyName, out, Opts)
+		  end, application:get_env(exo, policies, [])),
+    {ok, #ctx {buckets = BTab, policies = PTab}}.
+
 
 %%--------------------------------------------------------------------
 %% @private
@@ -369,21 +381,13 @@ code_change(_OldVsn, Ctx, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-add_bucket(_Buckets, _Key, _Policy, []) ->
-    {error, unknown_policy};
-add_bucket(Buckets, Key, Policy, [{Policy, Opts} = _P | _Rest]) ->
-    lager:debug("policy found ~p.", [_P]),
-    InOpts = proplists:get_value(in, Opts),
-    add_bucket(Buckets, {in, Key}, InOpts),   
-    OutOpts = proplists:get_value(out, Opts),
-    add_bucket(Buckets, {out, Key}, OutOpts),   
-    ok;
-add_bucket(Buckets, Key, Policy, [_Other | Rest]) ->
-    add_bucket(Buckets, Key, Policy, Rest).
-    
-add_bucket(_Buckets, _Key, undefined) ->
-    ok;
-add_bucket(Buckets, Key, Opts) ->
+add_template(PolicyName, Direction, Opts) ->
+    case proplists:get_value(Direction, Opts) of
+	[] -> do_nothing;
+	DirOpts -> add_bucket(?POLICIES, {Direction, PolicyName}, DirOpts)
+    end.
+
+add_bucket(Table, Key, Opts) ->
     Capacity = proplists:get_value(capacity, Opts),
     Rate = proplists:get_value(rate, Opts),
     Parent = proplists:get_value(parent, Opts),
@@ -396,14 +400,30 @@ add_bucket(Buckets, Key, Opts) ->
 		      parent = Parent,
 		      timestamp = erlang:system_time(micro_seconds)},
     lager:debug("bucket ~p created,", [Bucket]),
-    ets:insert(Buckets, {Key, Bucket}).
+    ets:insert(Table, Bucket).
+
+new_bucket({Direction, _K} = Key, PolicyName) -> 
+   case ets:lookup(?POLICIES, {Direction,PolicyName}) of
+       [Policy=#bucket {capacity = C}] ->
+	   ets:insert(?BUCKETS, 
+		      Policy#bucket{key=Key, 
+				    current = C, 
+				    timestamp = erlang:system_time(micro_seconds)}),
+	   lager:debug("bucket ~p created.", [Key]),
+	   ok;
+       [] -> 
+	   lager:debug("no policy found for ~p", [{Direction, PolicyName}]),
+	   {error,no_policy}
+    end.
 
 use_tokens(Key, Tokens) ->
-    case ets:lookup(?TABLE, Key) of
-	[{Key, B=#bucket {current = Current}}] when Tokens =< Current ->
-	    ets:insert(?TABLE, {Key, B#bucket {current = Current - Tokens}}),
+    case ets:lookup(?BUCKETS, Key) of
+	[_B=#bucket {current = Current}] when Tokens =< Current ->
+	    ets:update_element(?BUCKETS, Key, 
+			       [{#bucket.current, Current - Tokens}]),
 	    ok;
-	[{Key, _B=#bucket {action = Action}}] ->
+	[_B=#bucket {action = Action}] ->
+	    lager:debug("bucket ~p full, ~p.", [Key, Action]),
 	    {action, Action};
 	[] ->
 	    {error, unkown_key}
@@ -420,7 +440,7 @@ fill_bucket(B) when is_record(B, bucket) ->
 	   true ->
 		Current
 		end,
-    ets:insert(?TABLE, {B#bucket.key, B#bucket {current = T, timestamp = Now}}),
+    ets:insert(?BUCKETS, B#bucket {current = T, timestamp = Now}),
     {ok, T}.
     
 bucket_fill_time(B, Tokens) when is_record(B, bucket) ->
