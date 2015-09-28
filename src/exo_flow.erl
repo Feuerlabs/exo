@@ -64,7 +64,7 @@
 	{
 	  key::term(),
 	  capacity::float(),    %% max number of tokens in the bucket
-	  rate::float(),        %% bytes per second 
+	  rate::float(),        %% tokens per second 
 	  current::float(),     %% current number of tokens
 	  action::atom(),       %% to do when overload
 	  parent::atom(),       %% for group flow
@@ -140,7 +140,8 @@ new(Key, Policy) ->
 %%--------------------------------------------------------------------
 -spec delete(Key::term()) -> ok | {error, Error::atom()}.
 
-delete({_Direction, _K} = Key) ->
+delete({Direction, _K} = Key) when Direction =:= in;
+				   Direction =:= out ->
     lager:debug("key = ~p", [Key]),
     ets:delete(?BUCKETS, Key);
 delete(Key) ->
@@ -391,7 +392,7 @@ add_bucket(Table, Key, Opts) ->
     Capacity = proplists:get_value(capacity, Opts),
     Rate = proplists:get_value(rate, Opts),
     Parent = proplists:get_value(parent, Opts),
-    Action = proplists:get_value(action, Opts, throw),
+    Action = proplists:get_value(action, Opts),
     Bucket = #bucket {key = Key,
 		      capacity  = float(Capacity),
 		      current    = float(Capacity),
@@ -408,15 +409,25 @@ new_bucket({Direction, _K} = Key, PolicyName) ->
 	   ets:insert(?BUCKETS, 
 		      Policy#bucket{key=Key, 
 				    current = C, 
-				    timestamp = erlang:system_time(micro_seconds)}),
-	   lager:debug("bucket ~p created.", [Key]),
+				    timestamp = 
+					erlang:system_time(micro_seconds)}),
+	   lager:warning("bucket ~p created.", [Key]),
 	   ok;
        [] -> 
 	   lager:debug("no policy found for ~p", [{Direction, PolicyName}]),
 	   {error,no_policy}
     end.
 
-use_tokens(Key, Tokens) ->
+use_tokens({in, _K} = Key, Tokens) ->
+    %% Incoming data is already received so use is forced,
+    %% Note that current can become negative!
+    Current = ets:lookup_element(?BUCKETS, Key, #bucket.current),
+    if Current - Tokens < 0 -> lager:warning("bucket ~p negative.", [Key]);
+       true -> ok
+    end,
+    ets:update_element(?BUCKETS, Key, [{#bucket.current, Current - Tokens}]),
+    ok;
+use_tokens({out, _K} = Key, Tokens) ->
     case ets:lookup(?BUCKETS, Key) of
 	[_B=#bucket {current = Current}] when Tokens =< Current ->
 	    ets:update_element(?BUCKETS, Key, 
@@ -436,10 +447,12 @@ fill_bucket(B) when is_record(B, bucket) ->
     T = if Current < Capacity ->
 		Dt = time_delta(Now, B#bucket.timestamp),
 		New = B#bucket.rate * Dt,
+		lager:debug("bucket ~p tokens to fill ~p.", 
+			    [B#bucket.key, New]),
 		erlang:min(Capacity, Current + New);
 	   true ->
 		Current
-		end,
+	end,
     ets:insert(?BUCKETS, B#bucket {current = T, timestamp = Now}),
     {ok, T}.
     
@@ -449,11 +462,14 @@ bucket_fill_time(B, Tokens) when is_record(B, bucket) ->
 	    {ok, 0};
        true ->
 	    Ts = Tokens - Current,  %% tokens to wait for
-	    {ok, Ts / B#bucket.rate}
+	    Sec = Ts / B#bucket.rate, %% seconds to wait
+	    lager:warning("bucket ~p seconds to wait for ~p.", 
+			[B#bucket.key, Sec]),
+	    {ok, Sec}
     end.
 
 bucket_wait(B, Tokens)  when is_record(B, bucket) ->
-    {ok, Ts} = fill_time(B, Tokens),
+    {ok, Ts} = bucket_fill_time(B, Tokens),
     Tms = Ts*1000,
     Delay = trunc(Tms),
     if Delay < Tms ->

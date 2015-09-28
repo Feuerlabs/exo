@@ -422,6 +422,7 @@ response(S, Connection, Status, Phrase, Body, Opts) ->
     {Set_cookie, Opts2} = opt_take(set_cookie, Opts1, undefined),
     {Transfer_encoding,Opts3} = opt_take(transfer_encoding, Opts2, undefined),
     {Location,Opts4} = opt_take(location, Opts3, undefined),
+    {Version, Opts5} = opt_take(version, Opts4, {1,1}),
     ContentLength = if Transfer_encoding =:= "chunked", Body == "" ->
 			    undefined;
 		       true ->
@@ -433,9 +434,9 @@ response(S, Connection, Status, Phrase, Body, Opts) ->
 		     set_cookie = Set_cookie,
 		     transfer_encoding = Transfer_encoding,
 		     location = Location,
-		     other = Opts4 },
+		     other = Opts5 },
 
-    R = #http_response { version = {1, 1},
+    R = #http_response { version = Version,
 			 status = Status,
 			 phrase = Phrase,
 			 headers = H },

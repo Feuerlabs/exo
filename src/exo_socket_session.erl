@@ -42,7 +42,8 @@
 	  active,
 	  state,
 	  pending = [],
-	  idle_timeout
+	  idle_timeout,
+	  active_timer
 	 }).
 
 -include("exo_socket.hrl").
@@ -258,7 +259,13 @@ handle_info({Tag,Socket,Error}, State) when
 	{stop,Reason,CSt1} ->
 	    {stop, Reason, State#state { state = CSt1 }}
     end;
-    
+handle_info({timeout, Ref, {active, Value}}, 
+	    State=#state {active_timer = Ref, socket = S}) ->
+    ?debug("got active_timeout ~p\n", [Value]),
+    maybe_flow_control(S, fill),
+    exo_socket:setopts(State#state.socket, [{active,Value}]),
+    {noreply, State#state {active_timer = undefined}};
+
 handle_info(_Info, State) ->
     ?debug("Got info: ~p\n", [_Info]),
     ret({noreply, State}).
@@ -334,46 +341,62 @@ handle_reuse_data(Rest, #state{module = M, state = MSt} = State) ->
 handle_socket_data(Data, State=#state {module = M, state = CSt0, socket = S}) ->
     ModResult = apply(M, data, [S,Data,CSt0]),
     ?debug("result ~p", [ModResult]),
-    %% maybe_flow_control(S, use, 1), %% Count down
+    maybe_flow_control(S, use, 1), %% Count down
     handle_module_result(ModResult, State).
 
-maybe_flow_control(#exo_socket {flow = undefined}, _F, _T) ->
-    ok;
-maybe_flow_control(#exo_socket {socket = S}, F, T) ->
-    exo_flow:F({in, S},T).
-
 handle_module_result({ok,CSt1}, State) ->
-    if State#state.active =:= once ->
-	    exo_socket:setopts(State#state.socket, [{active,once}]);
-       true ->
-	    ok
-    end,
-    ret({noreply, State#state { state = CSt1 }});
+    TRef = handle_active(State),
+    ret({noreply, State#state { state = CSt1, active_timer = TRef }});
 handle_module_result({close, CSt1}, State) ->
     exo_socket:shutdown(State#state.socket, write),
     ret({noreply, State#state { state = CSt1 }});
 handle_module_result({stop,Reason,CSt1}, State) ->
     {stop, Reason, State#state { state = CSt1 }};
 handle_module_result({reply, Rep, CSt1}, State) ->
-    if State#state.active == once ->
-	    exo_socket:setopts(State#state.socket, [{active,once}]);
-       true ->
-	    ok
-    end,
+    TRef = handle_active(State),
     case State#state.pending of
 	[{From,_}|Rest] ->
 	    gen_server:reply(From, Rep),
 	    send_next(Rest, State#state.socket),
-	    ret({noreply, State#state { pending = Rest, state = CSt1 }});
+	    ret({noreply, State#state { pending = Rest, state = CSt1, 
+					active_timer = TRef  }});
 	[] ->
 	    %% huh?
-	    ret({noreply, State#state { state = CSt1 }})
+	    ret({noreply, State#state { state = CSt1, active_timer = TRef  }})
     end.
 
 send_next([{_From, Msg}|_], Socket) ->
     exo_socket:send(Socket, Msg);
 send_next([], _) ->
     ok.
+
+handle_active(State=#state {socket = S, active = Active}) ->
+    WaitTime = case maybe_flow_control(S, fill_time, 1) of
+		   ok -> 0;
+		   {ok, Time} ->  trunc(Time) * 1000
+	       end,
+
+    case {Active, WaitTime} of
+	{once, 0} ->
+	    exo_socket:setopts(State#state.socket, [{active,once}]),
+	    undefined;
+	{once, T} ->
+	    erlang:start_timer(T, self(), {active, once});
+	{true, 0} ->
+	    undefined;
+	{true, T} ->
+	    exo_socket:setopts(State#state.socket, [{active,false}]),
+	    erlang:start_timer(T, self(), {active, true})
+    end.
+maybe_flow_control(#exo_socket {flow = undefined}, _F) ->
+    ok;
+maybe_flow_control(#exo_socket {socket = S}, F) ->
+    exo_flow:F({in, S}).
+
+maybe_flow_control(#exo_socket {flow = undefined}, _F, _T) ->
+    ok;
+maybe_flow_control(#exo_socket {socket = S}, F, T) ->
+    exo_flow:F({in, S},T).
 
 get_parent(_) ->
     hd(get('$ancestors')).
