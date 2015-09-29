@@ -373,21 +373,33 @@ send_next([], _) ->
 handle_active(State=#state {socket = S, active = Active}) ->
     WaitTime = case maybe_flow_control(S, fill_time, 1) of
 		   ok -> 0;
-		   {ok, Time} ->  trunc(Time) * 1000
+		   {ok, Time} ->  trunc(Time) * 1000;
+		   {error, _E} -> 0
 	       end,
-
     case {Active, WaitTime} of
 	{once, 0} ->
 	    exo_socket:setopts(State#state.socket, [{active,once}]),
 	    undefined;
-	{once, T} ->
+	{once, T} when is_number(T) ->
 	    erlang:start_timer(T, self(), {active, once});
 	{true, 0} ->
 	    undefined;
-	{true, T} ->
+	{true, T} when is_number(T) ->
 	    exo_socket:setopts(State#state.socket, [{active,false}]),
-	    erlang:start_timer(T, self(), {active, true})
+	    erlang:start_timer(T, self(), {active, true});
+	{false, _T} ->
+	    undefined; %% ???
+	{N, 0} when is_number(N) ->
+	    undefined;
+	{N, T} when is_number(N), is_number(T) ->
+	    exo_socket:setopts(State#state.socket, [{active,false}]),
+	    erlang:start_timer(T, self(), {active, T}); %% ???
+	_Other ->
+	    %% What is this??
+	    lager:error("Unexpected {active, time} = ~p",[ _Other]),
+	    undefined
     end.
+
 maybe_flow_control(#exo_socket {flow = undefined}, _F) ->
     ok;
 maybe_flow_control(#exo_socket {socket = S}, F) ->
