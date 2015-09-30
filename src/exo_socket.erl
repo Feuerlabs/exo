@@ -469,6 +469,7 @@ recv(HSocket, Size) ->
 
 recv(#exo_socket { mdata = M, socket = S,
 		   mauth = A, auth_state = Sa} = X, Size, Timeout) ->
+    ?debug("socket ~p, size ~p, timeout ~p", [X, Size, Timeout]),
     if A == undefined ->
 	    M:recv(S, Size, Timeout);
        true ->

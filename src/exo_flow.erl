@@ -411,10 +411,10 @@ new_bucket({Direction, _K} = Key, PolicyName) ->
 				    current = C, 
 				    timestamp = 
 					erlang:system_time(micro_seconds)}),
-	   lager:warning("bucket ~p created.", [Key]),
+	   lager:debug("bucket ~p created.", [Key]),
 	   ok;
        [] -> 
-	   lager:debug("no policy found for ~p", [{Direction, PolicyName}]),
+	   lager:warning("no policy found for ~p", [{Direction, PolicyName}]),
 	   {error,no_policy}
     end.
 
@@ -463,7 +463,7 @@ bucket_fill_time(B, Tokens) when is_record(B, bucket) ->
        true ->
 	    Ts = Tokens - Current,  %% tokens to wait for
 	    Sec = Ts / B#bucket.rate, %% seconds to wait
-	    lager:warning("bucket ~p seconds to wait for ~p.", 
+	    lager:debug("bucket ~p seconds to wait for ~p.", 
 			[B#bucket.key, Sec]),
 	    {ok, Sec}
     end.
