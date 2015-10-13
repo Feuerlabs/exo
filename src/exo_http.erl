@@ -68,11 +68,7 @@
 
 -import(lists, [reverse/1]).
 
--ifdef(debug).
--define(dbg(F, A), io:format((F), (A))).
--else.
--define(dbg(F, A), ok).
--endif.
+-define(dbg(F, A), lager:debug(F, A)).
 
 
 %%
@@ -704,6 +700,7 @@ recv_hc(S, R, H, Timeout) ->
 		    ?dbg("HEADER < ~p ~p\n", [K, V]),
 		    recv_hc(S,R,set_chdr(K,V,H), Timeout);
 		Got ->
+		    ?dbg("HEADER ERROR ~p\n", [Got]),
 		    {error, Got}
 	    end;
 	{error, {http_error, ?CRNL}} -> 
@@ -712,7 +709,9 @@ recv_hc(S, R, H, Timeout) ->
 	{error, {http_error, ?NL}} -> 
 	    ?dbg("ERROR NL <\n", []),
 	    recv_hc(S, R, H,Timeout);
-	Error -> Error
+	Error -> 
+	    ?dbg("RECV ERROR ~p <\n", [Error]),
+	    Error
     end.
 
 recv_hs(S, R, H, Timeout) ->

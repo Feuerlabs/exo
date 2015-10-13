@@ -339,6 +339,7 @@ handle_reuse_data(Rest, #state{module = M, state = MSt} = State) ->
     ret({noreply, State1}).
 
 handle_socket_data(Data, State=#state {module = M, state = CSt0, socket = S}) ->
+    ?debug("call ~p", [M]),
     ModResult = apply(M, data, [S,Data,CSt0]),
     ?debug("result ~p", [ModResult]),
     maybe_flow_control(S, use, 1), %% Count down
@@ -376,6 +377,7 @@ handle_active(State=#state {socket = S, active = Active}) ->
 		   {ok, Time} ->  trunc(Time) * 1000;
 		   {error, _E} -> 0
 	       end,
+    lager:debug("{active, time} = ~p",[ {Active, WaitTime} ]),
     case {Active, WaitTime} of
 	{once, 0} ->
 	    exo_socket:setopts(State#state.socket, [{active,once}]),
