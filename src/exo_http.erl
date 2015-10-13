@@ -888,7 +888,7 @@ to_list(X) when is_atom(X) -> atom_to_list(X);
 to_list(X) when is_list(X) -> X.
 
 convert_uri({abs_path, Path}) ->
-    #url{ path = Path };
+    exo_url:parse_path(#url{ }, Path);
 convert_uri({absoluteURI, Scheme, Host, Port, Path}) ->
     exo_url:parse_path(#url{ scheme = Scheme,host = Host, port = Port}, Path);
 convert_uri({scheme, Scheme, Request}) ->
