@@ -26,8 +26,6 @@
 -module(exo_flow).
 -behaviour(gen_server).
 
--include_lib("lager/include/log.hrl").
-
 %% general api
 -export([start_link/1, 
 	 stop/0]).
