@@ -397,7 +397,7 @@ add_bucket(Table, Key, Opts) ->
 		      rate = float(Rate),
 		      action = Action,
 		      parent = Parent,
-		      timestamp = erlang:system_time(micro_seconds)},
+		      timestamp = erlang_system_time_us()},
     lager:debug("bucket ~p created,", [Bucket]),
     ets:insert(Table, Bucket).
 
@@ -407,8 +407,7 @@ new_bucket({Direction, _K} = Key, PolicyName) ->
 	   ets:insert(?BUCKETS, 
 		      Policy#bucket{key=Key, 
 				    current = C, 
-				    timestamp = 
-					erlang:system_time(micro_seconds)}),
+				    timestamp = erlang_system_time_us()}),
 	   lager:debug("bucket ~p created.", [Key]),
 	   ok;
        [] -> 
@@ -439,7 +438,7 @@ use_tokens({out, _K} = Key, Tokens) ->
     end.
 
 fill_bucket(B) when is_record(B, bucket) ->
-    Now = erlang:system_time(micro_seconds),
+    Now = erlang_system_time_us(),
     Current = B#bucket.current,
     Capacity = B#bucket.capacity,
     T = if Current < Capacity ->
@@ -480,3 +479,12 @@ bucket_wait(B, Tokens)  when is_record(B, bucket) ->
 
 time_delta(T1, T0) ->
     (T1 - T0) / 1000000.
+
+
+erlang_system_time_us() ->
+    try erlang:system_time(micro_seconds)
+    catch
+	error:undef ->
+	    {MS,S,US} = os:timestamp(),
+	    (MS*1000000+S)*1000000+US
+    end.
