@@ -91,7 +91,7 @@
 			{error, Error::term()}.
 
 start_link(Opts) ->
-    lager:info("args = ~p\n", [Opts]),
+    lager:debug("args = ~p\n", [Opts]),
     F =	case proplists:get_value(linked,Opts,true) of
 	    true -> start_link;
 	    false -> start
@@ -273,13 +273,13 @@ dump() ->
 		  {stop, Reason::term()}.
 
 init(Args) ->
-    lager:info("args = ~p,\n pid = ~p\n", [Args, self()]),
+    lager:debug("args = ~p,\n pid = ~p\n", [Args, self()]),
     BTab = ets:new(?BUCKETS, [named_table, public, {keypos, #bucket.key}]),
     PTab = ets:new(?POLICIES, [named_table, public, {keypos, #bucket.key}]),
     lists:foreach(fun({PolicyName, Opts}) ->
 			  add_template(PolicyName, in, Opts),
 			  add_template(PolicyName, out, Opts)
-		  end, application:get_env(exo, policies, [])),
+		  end, opt_get_env(exo, policies, [])),
     {ok, #ctx {buckets = BTab, policies = PTab}}.
 
 
@@ -480,6 +480,11 @@ bucket_wait(B, Tokens)  when is_record(B, bucket) ->
 time_delta(T1, T0) ->
     (T1 - T0) / 1000000.
 
+opt_get_env(App, Key, Default) ->
+    case application:get_env(App, Key) of
+	undefined -> Default;
+	{ok,Value} -> Value
+    end.
 
 erlang_system_time_us() ->
     try erlang:system_time(micro_seconds)
