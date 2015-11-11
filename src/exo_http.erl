@@ -167,6 +167,10 @@ wpost_body(Req, Data) ->
     case Headers#http_chdr.content_type of
 	undefined ->
 	    wpost_form_body(Req, Data);
+	"application/json" ->
+	    wpost_json_body(Req, Data);
+	"application/xml" ->
+	    wpost_xml_body(Req, Data);
 	"application/x-www-form-urlencoded" ->
 	    wpost_form_body(Req, Data);
 	"multipart/"++_ ->
@@ -175,6 +179,11 @@ wpost_body(Req, Data) ->
 	    wpost_plain_body(Req, Data)
     end.
 
+wpost_json_body(Req, Data) ->
+    {ok,Req,exo_json:encode(Data)}.
+
+wpost_xml_body(Req, Data) ->
+    {ok,Req,xmerl:export_simple(Data, xmerl_xml)}.
     
 wpost_form_body(Req, Data) ->
     {ok,Req,format_query(Data)}.
