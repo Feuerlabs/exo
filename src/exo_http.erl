@@ -19,6 +19,7 @@
 
 %% simple client interface
 -export([wget/1, wget/2, wget/3, wget/4]).
+-export([wput/2, wput/3, wput/4, wput/5]).
 -export([wpost/2, wpost/3, wpost/4, wpost/5, wpost_body/2]).
 -export([wxget/3, wxget/4, wxget/5, wxget/6]).
 -export([woptions/1, woptions/2, woptions/3, woptions/4]).
@@ -131,6 +132,37 @@ wtrace(Url, Version, Hs) ->
 wtrace(Url, Version, Hs,Timeout) ->
     Req = make_request('TRACE',Url,Version,Hs),
     request(Req,[],Timeout).
+
+%%
+%% HTTP/1.1 PUT
+%% 1.  Content-type: application/x-www-form-urlencoded
+%%       - Data = [{key,value}] => key=valye&...
+%%       - Data = [{file,Name,FileName} | {binary,Name,<<bin>>} | <<bin>>
+%%
+%% 2.
+%%     Content-type: multipart/form-data; boundary=XYZ
+%%
+%%     Content-type: multipart/<form>
+%%
+%%        - Data = [{file,ContentType,DispositionName,FileName}  | 
+%%                  {data,ContentType,DispositionName,<<bin>>} |
+%%                  <<bin>>]
+%%
+%%
+wput(Url,Data) ->
+    wput(Url,{1,1},[],Data).
+
+wput(Url,Hs,Data) ->
+    wput(Url,{1,1},Hs,Data,infinity).
+
+wput(Url,Version,Hs,Data) ->
+    wput(Url,Version,Hs,Data,infinity).
+
+wput(Url,Version,Hs,Data,Timeout) ->
+    Req = make_request('PUT',Url,Version,Hs),
+    {ok,Req1,Body} = wpost_body(Req, Data),
+    request(Req1, Body, Timeout).
+
 
 %%
 %% HTTP/1.1 POST
