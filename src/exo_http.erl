@@ -33,12 +33,10 @@
 %% message interface
 -export([recv_response/1, recv_response/2,
 	 recv_request/1, recv_request/2,
-	 recv_body/2,
-	 recv_body/3,
-	 recv_body_eof/1,
-	 recv_body_data/2,
-	 recv_body_chunks/1,
-	 recv_body_chunks/2,
+	 recv_body/2, recv_body/3, recv_body/5,
+	 recv_body_eof/1,recv_body_eof/2,recv_body_eof/4,
+	 recv_body_data/2,recv_body_data/3,recv_body_data/5,
+	 recv_body_chunks/1,recv_body_chunks/2,recv_body_chunks/4,
 	 recv_headers/2,
 	 recv_headers/3
 	]).
@@ -567,54 +565,61 @@ recv_response(S,Timeout) ->
 recv_body(S, R) ->
     recv_body(S, R, infinity).
 
-recv_body(S, Request, Timeout) when is_record(Request, http_request) ->
+recv_body(S, R, Timeout) ->
+    recv_body(S, R, fun (Data, Acc) -> [Data|Acc] end, [], Timeout).
+    
+recv_body(S, Request, Fun, Acc, Timeout) 
+  when is_record(Request, http_request) ->
     Method = Request#http_request.method,
     if Method =:= 'POST';
        Method =:= 'PUT' ->
 	    H = Request#http_request.headers,
 	    case Request#http_request.version of
 		{0,9} ->
-		    recv_body_eof(S, Timeout);
+		    recv_body_eof(S, Fun, Acc, Timeout);
 		{1,0} ->
 		    case H#http_chdr.content_length of
-			undefined -> recv_body_eof(S,Timeout);
-			Len -> recv_body_data(S, list_to_integer(Len),Timeout)
+			undefined -> recv_body_eof(S,Fun,Acc,Timeout);
+			Len -> recv_body_data(S,list_to_integer(Len),Fun,Acc,
+					      Timeout)
 		    end;
 		{1,1} ->
 		    case H#http_chdr.content_length of
 			undefined ->
 			    case H#http_chdr.transfer_encoding of
-				undefined -> recv_body_eof(S,Timeout);
-				"chunked" -> recv_body_chunks(S,Timeout)
+				undefined -> recv_body_eof(S,Fun,Acc,Timeout);
+				"chunked" -> recv_body_chunks(S,Fun,Acc,Timeout)
 			    end;
-			Len -> recv_body_data(S, list_to_integer(Len),Timeout)
+			Len -> recv_body_data(S,list_to_integer(Len),Fun,Acc,
+					      Timeout)
 		    end
 	    end;
        %% FIXME: handle GET/XXX with body
        true ->
 	    {ok, <<>>}
     end;
-recv_body(S, Response,Timeout) when is_record(Response, http_response) ->
+recv_body(S, Response, Fun, Acc, Timeout) 
+  when is_record(Response, http_response) ->
     %% version 0.9  => read until eof
     %% version 1.0  => read either Content-Length or until eof
     %% version 1.1  => read Content-Length or Chunked or eof
     H = Response#http_response.headers,
     case Response#http_response.version of
 	{0,9} ->
-	    recv_body_eof(S,Timeout);
+	    recv_body_eof(S,Fun,Acc,Timeout);
 	{1,0} ->
 	    case H#http_shdr.content_length of
-		undefined -> recv_body_eof(S,Timeout);
-		Len -> recv_body_data(S, list_to_integer(Len),Timeout)
+		undefined -> recv_body_eof(S,Fun,Acc,Timeout);
+		Len -> recv_body_data(S,list_to_integer(Len),Fun,Acc,Timeout)
 	    end;
 	{1,1} ->
 	    case H#http_shdr.content_length of
 		undefined ->
 		    case H#http_shdr.transfer_encoding of
-			undefined -> recv_body_eof(S,Timeout);
-			"chunked" -> recv_body_chunks(S,Timeout)
+			undefined -> recv_body_eof(S,Fun,Acc,Timeout);
+			"chunked" -> recv_body_chunks(S,Fun,Acc,Timeout)
 		    end;
-		Len -> recv_body_data(S, list_to_integer(Len),Timeout)
+		Len -> recv_body_data(S,list_to_integer(Len),Fun,Acc,Timeout)
 	    end
     end.
 
@@ -622,14 +627,18 @@ recv_body_eof(Socket) ->
     recv_body_eof(Socket,infinity).
 
 recv_body_eof(Socket,Timeout) ->
+    recv_body_eof(Socket,fun(Data,Acc) -> [Data|Acc] end, [], Timeout).
+    
+recv_body_eof(Socket,Fun,Acc,Timeout) ->
     ?dbg("RECV_BODY_EOF: tmo=~w\n", [Timeout]),    
     exo_socket:setopts(Socket, [{packet,raw},{mode,binary}]),
-    recv_body_eof1(Socket, [], Timeout).
+    recv_body_eof1(Socket,Fun,Acc,Timeout).
 
-recv_body_eof1(Socket, Acc,Timeout) ->
+recv_body_eof1(Socket,Fun,Acc,Timeout) ->
     case exo_socket:recv(Socket, 0, Timeout) of
 	{ok, Bin} ->
-	    recv_body_eof1(Socket, [Bin|Acc],Timeout);
+	    Acc1 = Fun(Bin, Acc),
+	    recv_body_eof1(Socket,Fun,Acc1,Timeout);
 	{error, closed} ->
 	    {ok, list_to_binary(reverse(Acc))};
 	Error ->
@@ -639,16 +648,20 @@ recv_body_eof1(Socket, Acc,Timeout) ->
 recv_body_data(Socket, Len) ->
     recv_body_data(Socket, Len, infinity).
 
-recv_body_data(_Socket, 0, _Timeout) ->
-    ?dbg("RECV_BODY_DATA: len=0, tmo=~w\n", [_Timeout]),    
-    {ok, <<>>};
 recv_body_data(Socket, Len, Timeout) ->
+    recv_body_data(Socket, Len, fun(Data,Acc) -> [Data|Acc] end, [], Timeout).
+
+recv_body_data(_Socket, 0, _Fun, _Acc, _Timeout) ->
+    ?dbg("RECV_BODY_DATA: len=0, tmo=~w\n", [_Timeout]),
+    {ok, <<>>};
+recv_body_data(Socket, Len, Fun, Acc, Timeout) ->
     ?dbg("RECV_BODY_DATA: len=~p, tmo=~w\n", [Len,Timeout]),    
     exo_socket:setopts(Socket, [{packet,raw},{mode,binary}]),
     case exo_socket:recv(Socket, Len, Timeout) of
 	{ok, Bin} ->
+	    Acc1 = Fun(Bin, Acc),
 	    exo_socket:setopts(Socket, [{packet,http}]),
-	    {ok,Bin};
+	    {ok,iolist_to_binary(reverse(Acc1))};
 	Error ->
 	    Error
     end.
@@ -658,11 +671,14 @@ recv_body_chunks(Socket) ->
     recv_body_chunks(Socket, infinity).
 
 recv_body_chunks(Socket, Timeout) ->
+    recv_body_chunks(Socket, fun(Chunk,Acc) -> [Chunk|Acc] end, [], Timeout).
+
+recv_body_chunks(Socket, Fun, Acc, Timeout) ->
     exo_socket:setopts(Socket, [{packet,line},{mode,list}]),
     ?dbg("RECV_BODY_CHUNKS: tmo=~w\n", [Timeout]),
-    recv_body_chunk(Socket, [], Timeout).
+    recv_body_chunk(Socket, Fun, Acc, Timeout).
 
-recv_body_chunk(S, Acc, Timeout) ->
+recv_body_chunk(S, Fun, Acc, Timeout) ->
     case exo_socket:recv(S, 0, Timeout) of
 	{ok,Line} ->
 	    ?dbg("CHUNK-Line: ~p\n", [Line]),
@@ -686,9 +702,11 @@ recv_body_chunk(S, Acc, Timeout) ->
 			    exo_socket:setopts(S, [{packet,line},{mode,list}]),
 			    case exo_socket:recv(S, 0, Timeout) of
 				{ok, ?NL} ->
-				    recv_body_chunk(S,[Bin|Acc],Timeout);
+				    Acc1 = Fun(Bin,Acc),
+				    recv_body_chunk(S,Fun,Acc1,Timeout);
 				{ok, ?CRNL} ->
-				    recv_body_chunk(S,[Bin|Acc],Timeout);
+				    Acc1 = Fun(Bin,Acc),
+				    recv_body_chunk(S,Fun,Acc1,Timeout);
 				{ok, _Data} ->
 				    ?dbg("out of sync ~p\n", [_Data]),
 				    {error, sync_error};
