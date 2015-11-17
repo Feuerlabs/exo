@@ -391,7 +391,8 @@ handle_active(State=#state {socket = S, active = Active}) ->
 	{true, T} when is_number(T) ->
 	    exo_socket:setopts(State#state.socket, [{active,false}]),
 	    erlang:start_timer(T, self(), {active, true});
-	{false, _T} ->
+	{false, _T} = _Other->
+	    lager:error(" Not handled {active, time} = ~p",[_Other]),
 	    maybe_flow_control(S, fill),
 	    undefined; %% ???
 	{N, 0} when is_number(N) ->
