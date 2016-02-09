@@ -136,7 +136,7 @@ new(Key, Policy) ->
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec delete(Key::term()) -> ok | {error, Error::atom()}.
+-spec delete(Key::term()) -> true.
 
 delete({Direction, _K} = Key) when Direction =:= in;
 				   Direction =:= out ->
@@ -239,9 +239,9 @@ fill_wait({Direction, _K} = Key, Tokens)
   when is_number(Tokens), is_atom(Direction) ->
    lager:debug("key = ~p, tokens = ~p", [Key, Tokens]),
    case ets:lookup(?BUCKETS, Key) of
-	[B] when is_record(B, bucket) ->
-	   wait(B, Tokens),
-	   fill(B);
+	[{Key,B}] when is_record(B, bucket) ->
+	   bucket_wait(B, Tokens),
+	   fill_bucket(B);
 	[] ->
 	    {error, unkown_key}
     end.
