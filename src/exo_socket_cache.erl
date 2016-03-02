@@ -121,6 +121,7 @@ connect([IP|IPs],Port,Proto,Vsn,Opts,Timeout,_Err) ->
 	    connect(IPs,Port,Proto,Vsn,Opts,Timeout,Reason)
     end;
 connect([],_Port,_Proto,_Vsn,_Opts,_Timeout,Reason) ->
+    lager:debug("connect failed, reason ~p\n",[Reason]),
     {error, Reason}.
     
 %%====================================================================
