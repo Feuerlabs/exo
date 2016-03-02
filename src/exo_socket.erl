@@ -293,8 +293,7 @@ connect_upgrade(X, Protos0, Timeout) ->
 					tags={ssl,ssl_closed,ssl_error}},
 		    connect_upgrade(X1, Protos1, Timeout);
 		Error={error,_Reason} ->
-		    lager:debug("ssl:connect error=~w\n", 
-			 [_Reason]),
+		    lager:debug("ssl:connect error=~w\n", [_Reason]),
 		    Error
 	    end;
 	[http|Protos1] ->
@@ -312,13 +311,22 @@ connect_upgrade(X, Protos0, Timeout) ->
     end.
 			       
 ssl_connect(Socket, Options, Timeout) ->    
-    case ssl:connect(Socket, Options, Timeout) of
-	{error, ssl_not_started} ->
-	    ssl:start(),
-	    ssl:connect(Socket, Options, Timeout);
-	Result ->
-	    Result
+    try
+	begin
+	    case ssl:connect(Socket, Options, Timeout) of
+		{error, ssl_not_started} ->
+		    ssl:start(),
+		    ssl:connect(Socket, Options, Timeout);
+		Result ->
+		    Result
+	    end
+	end
+    catch
+	error:Error ->
+	    lager:debug("ssl_connect failed, reason ~p", [Error]),
+	    {error, einval}
     end.
+
 
 %% using this little trick we avoid code loading
 %% problem in a module doing blocking accept call
