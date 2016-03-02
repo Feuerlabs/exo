@@ -44,6 +44,9 @@ parse(Str, Strict) ->
 
 parse_host(Strict, U, Str, Ack) ->
     case Str of
+	"unix:" ++ T ->
+	    U2 = U#url{host = unix},
+	    parse_port(Strict, U2, T,[]);
 	[] ->
 	    U#url{host = lists:reverse(Ack), 
 		  path = "/"
@@ -63,9 +66,12 @@ parse_port(Strict, U, Str, Ack) ->
 	[] ->
 	    U#url{port = list_to_integer(lists:reverse(Ack)),
 		  path = "/"};
-	[$/|T] ->
+	[$/|T] when U#url.host =/= unix ->
 	    U2 = U#url{port = list_to_integer(lists:reverse(Ack))},
 	    parse_path(Strict, U2, T,"/");
+	[$:|T] when U#url.host =:= unix->
+	    U2 = U#url{port = lists:reverse(Ack)},
+	    parse_path(Strict, U2, T,[]);
 	[H|T] ->
 	    parse_port(Strict, U,T,[H|Ack])
     end.
