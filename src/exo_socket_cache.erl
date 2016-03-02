@@ -68,6 +68,15 @@ open(Proto, Vsn, Host, Port) ->
     open(Proto, Vsn, Host, Port, infinity).
 
 
+open(Proto, Vsn, unix, Port, Timeout) ->
+    start(),  %% fixme: add is supervisor
+    case gen_server:call(?SERVER,{alloc,Proto,Vsn,[unix],Port,self()}) of
+	{ok, HS} ->
+	    {ok,HS};
+	{error,_} ->
+	    connect([unix],Port,Proto,Vsn,[{active,false}],
+		    Timeout, undefined)
+    end;
 open(Proto, Vsn, Host, Port, Timeout) ->
     start(),  %% fixme: add is supervisor
     case inet:getaddrs(Host, inet, Timeout) of
