@@ -1,6 +1,6 @@
 %%%---- BEGIN COPYRIGHT -------------------------------------------------------
 %%%
-%%% Copyright (C) 2012 Feuerlabs, Inc. All rights reserved.
+%%% Copyright (C) 2012-2016 Feuerlabs, Inc. All rights reserved.
 %%%
 %%% This Source Code Form is subject to the terms of the Mozilla Public
 %%% License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -27,7 +27,6 @@
 
 -export([control/4]).
 
--include("log.hrl").
 -include("exo_socket.hrl").
 -include("exo_http.hrl").
 
@@ -92,12 +91,13 @@ start_link(Port, Options) ->
 
 
 do_start(Start, Port, Options) ->
-    ?debug("exo_http_server: ~w: port ~p, server options ~p",
+    lager:debug("exo_http_server: ~w: port ~p, server options ~p",
 	   [Start, Port, Options]),
     {ServerOptions,Options1} = opts_take([request_handler,access,private_key],
 					 Options),
     Dir = code:priv_dir(exo),
-    exo_socket_server:Start(Port, [tcp,probe_ssl,http],
+    exo_socket_server:Start(Port, 
+			    [tcp,probe_ssl,http],
 			    [{active,once},{reuseaddr,true},
 			     {verify, verify_none},
 			     {keyfile, filename:join(Dir, "host.key")},
@@ -116,9 +116,11 @@ do_start(Start, Port, Options) ->
 		  {ok, State::#state{}}.
 
 init(Socket, Options) ->
-    {ok,{_IP,_Port}} = exo_socket:peername(Socket),
-    ?debug("exo_http_server: connection from: ~p : ~p,\n options ~p",
-	   [_IP, _Port, Options]),
+    lager:debug("exo_http_server: connection on: ~p ", [Socket]),
+    {ok, _PeerName} = exo_socket:peername(Socket),
+    {ok, _SockName} = exo_socket:sockname(Socket),
+    lager:debug("exo_http_server: connection from peer: ~p, sockname: ~p,\n"
+		"options ~p", [_PeerName, _SockName, Options]),
     Access = proplists:get_value(access, Options, []),
     Module = proplists:get_value(request_handler, Options, undefined),
     PrivateKey = proplists:get_value(private_key, Options, ""),
@@ -152,7 +154,7 @@ control(_Socket, _Request, _From, State) ->
 		  {stop, {error, Reason::term()}, NewState::#state{}}.
 
 data(Socket, Data, State) ->
-    ?debug("exo_http_server:~w: data = ~w\n", [self(),Data]),
+    lager:debug("exo_http_server:~w: data = ~w\n", [self(),Data]),
     case Data of
 	{http_request, Method, Uri, Version} ->
 	    CUri = exo_http:convert_uri(Uri),
@@ -168,7 +170,7 @@ data(Socket, Data, State) ->
 	{http_error, ?NL} ->
 	    {ok, State};
 	_ when is_list(Data); is_binary(Data) ->
-	    ?debug("exo_http_server: request data: ~p\n", [Data]),
+	    lager:debug("exo_http_server: request data: ~p\n", [Data]),
 	    {stop, {error,sync_error}, State};
 	Error ->
 	    {stop, Error, State}
@@ -185,7 +187,7 @@ data(Socket, Data, State) ->
 		   {ok, NewState::#state{}}.
 
 close(_Socket, State) ->
-    ?debug("exo_http_server: close\n", []),
+    lager:debug("exo_http_server: close\n", []),
     {ok,State}.
 
 %%-----------------------------------------------------------------------------
@@ -201,12 +203,12 @@ close(_Socket, State) ->
 		   {stop, {error, Reason::term()}, NewState::#state{}}.
 
 error(_Socket,Error,State) ->
-    ?debug("exo_http_serber: error = ~p\n", [Error]),
+    lager:debug("exo_http_serber: error = ~p\n", [Error]),
     {stop, Error, State}.
 
 
 handle_request(Socket, R, State) ->
-    ?debug("exo_http_server: request = ~s\n",
+    lager:debug("exo_http_server: request = ~s\n",
 	 [[exo_http:format_request(R),?CRNL,
 	   exo_http:format_hdr(R#http_request.headers),
 	   ?CRNL]]),
@@ -236,10 +238,10 @@ handle_auth(Socket, Request, Body, State) when not State#state.authorized ->
        true ->
 	    Header = Request#http_request.headers,
 	    Autorization = get_authorization(Header#http_chdr.authorization),
-	    ?debug("authorization = ~p", [Autorization]),
+	    lager:debug("authorization = ~p", [Autorization]),
 	    case match_access(Request#http_request.uri, Access) of
 		[Cred={basic,_Path,_User,_Password,_Realm}|_] ->
-		    ?debug("cred = ~p", [Cred]),
+		    lager:debug("cred = ~p", [Cred]),
 		    handle_basic_auth(Socket, Request, Body, Autorization,
 				      Cred, State);
 		[Cred={digest,_Path,_User,_Password,_Realm}|_] ->
@@ -270,13 +272,13 @@ handle_digest_auth(_Socket, Request, _Body, {digest,AuthParams},
     DigestUriValue = proplists:get_value(<<"uri">>,AuthParams,""),
     %% FIXME! Verify Nonce!!!
     A1 = a1(Cred),
-    %% ?debug("A1 = \"~s\"", [A1]),
+    %% lager:debug("A1 = \"~s\"", [A1]),
     HA1 = hex(crypto:md5(A1)),
     A2 = a2(Request#http_request.method, DigestUriValue),
-    %% ?debug("A2 = \"~s\"", [A2]),
+    %% lager:debug("A2 = \"~s\"", [A2]),
     HA2 = hex(crypto:md5(A2)),
     Digest = hex(kd(HA1, Nonce++":"++HA2)),
-    %% ?debug("Digest = \"~s\"", [Digest]),
+    %% lager:debug("Digest = \"~s\"", [Digest]),
     if Digest =:= Response ->
 	    ok;
        true ->
@@ -368,7 +370,7 @@ unq_([]) -> [].
 handle_body(Socket, Request, Body, State) ->
     RH = State#state.request_handler,
     {M, F, As} = request_handler(RH,Socket, Request, Body),
-    ?debug("exo_http_server: calling ~p with -BODY:\n~s\n-END-BODY\n",
+    lager:debug("exo_http_server: calling ~p with -BODY:\n~s\n-END-BODY\n",
 	   [RH, Body]),
     case apply(M, F, As) of
 	ok -> {ok, State};
@@ -445,7 +447,7 @@ response(S, Connection, Status, Phrase, Body, Opts) ->
 		exo_http:format_hdr(H),
 		?CRNL,
 		Body],
-    ?debug("exo_http_server: response:\n~s\n", [Response]),
+    lager:debug("exo_http_server: response:\n~s\n", [Response]),
     exo_socket:send(S, Response).
 
 content_length(B) when is_binary(B) ->
@@ -477,7 +479,7 @@ opts_take_([], L, Acc) ->
 %% @private
 handle_http_request(Socket, Request, Body) ->
     Url = Request#http_request.uri,
-    ?debug("exo_http_server: -BODY:\n~s\n-END-BODY\n", [Body]),
+    lager:debug("exo_http_server: -BODY:\n~s\n-END-BODY\n", [Body]),
     if Request#http_request.method =:= 'GET',
        Url#url.path =:= "/quit" ->
 	    response(Socket, "close", 200, "OK", "QUIT"),
