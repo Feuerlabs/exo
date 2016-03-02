@@ -1,6 +1,6 @@
 %%%---- BEGIN COPYRIGHT -------------------------------------------------------
 %%%
-%%% Copyright (C) 2012 Feuerlabs, Inc. All rights reserved.
+%%% Copyright (C) 2012-2016 Feuerlabs, Inc. All rights reserved.
 %%%
 %%% This Source Code Form is subject to the terms of the Mozilla Public
 %%% License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -47,7 +47,6 @@
 	 }).
 
 -include("exo_socket.hrl").
--include("log.hrl").
 
 -type exo_socket() :: #exo_socket {}.
 
@@ -114,14 +113,14 @@ init([XSocket, Module, Args]) ->
 %% No 'local' handle_call
 handle_call(Request, From, 
 	    State=#state{module = M, state = MSt, socket = Socket}) ->
-    ?debug("~p", [Request]),
+    lager:debug("~p", [Request]),
     try M:control(Socket, Request, From, MSt) of
 	Result -> 
-	    ?debug("reply ~p", [Result]),
+	    lager:debug("reply ~p", [Result]),
 	    mod_reply(Result, From, State)
     catch
 	error:_Error -> 
-	    ?debug("catch reason  ~p", [_Error]),
+	    lager:debug("catch reason  ~p", [_Error]),
 	    ret({reply, {error, unknown_call}, State})
     end.
 
@@ -148,13 +147,13 @@ mod_reply({send, Bin, MSt, Timeout}, From, State) ->
     ret({noreply, State1, Timeout});
 mod_reply({stop, Reason, Reply, _MSt}, _From, State) ->
     %% Terminating
-    ?debug("stopping ~p with reason ~p", [self(), Reason]),
+    lager:debug("stopping ~p with reason ~p", [self(), Reason]),
     {stop, Reason, Reply, State}.
 
 send_(Bin, From, #state{socket = S, pending = P} = State) ->
     P1 = if P == [] ->
 		 exo_socket:send(S, Bin),
-		 ?debug("bin sent to ~p", [S]),
+		 lager:debug("bin sent to ~p", [S]),
 		 [{From,Bin}|P];
 	    true -> P
 	 end,
@@ -173,10 +172,10 @@ send_(Bin, From, #state{socket = S, pending = P} = State) ->
 %% @end
 %%--------------------------------------------------------------------
 handle_cast({activate,Active}, State0) ->
-    ?debug("activate~n", []),
+    lager:debug("activate~n", []),
     try exo_socket:authenticate(State0#state.socket) of
 	{ok, S} ->
-	    ?debug("authentication done~n", []),
+	    lager:debug("authentication done~n", []),
 	    State = State0#state{socket = S},
 	    case apply(State#state.module, init,
 		       [State#state.socket,State#state.args]) of
@@ -188,7 +187,7 @@ handle_cast({activate,Active}, State0) ->
 		    SessionOpts = [{active,Active},{exit_on_close, false}],
 
 		    _Res = exo_socket:setopts(State#state.socket, SessionOpts),
-		    ?debug("exo_socket: setopts(~w) = ~w\n", 
+		    lager:debug("exo_socket: setopts(~w) = ~w\n", 
 			   [SessionOpts, _Res]),
 		    State1 = State#state { active = Active, state = CSt0 },
 		    case Ok of
@@ -222,13 +221,13 @@ handle_cast(_Msg, State) ->
 %%--------------------------------------------------------------------
 handle_info(timeout, State) ->
     exo_socket:shutdown(State#state.socket, write),
-    ?debug("idle_timeout~p~n", [self()]),
+    lager:debug("idle_timeout~p~n", [self()]),
     {stop, normal, State};
 handle_info({Tag,Socket,Data0}, State) when 
       %% FIXME: put socket tag in State for correct matching
       (Tag =:= tcp orelse Tag =:= ssl orelse Tag =:= http), 
       Socket =:= (State#state.socket)#exo_socket.socket ->
-    ?debug("got data ~p\n", [{Tag,Socket,Data0}]),
+    lager:debug("got data ~p\n", [{Tag,Socket,Data0}]),
     try exo_socket:auth_incoming(State#state.socket, Data0) of
 	<<"reuse%", Rest/binary>> ->
 	    handle_reuse_data(Rest, State);
@@ -242,7 +241,7 @@ handle_info({Tag,Socket,Data0}, State) when
 handle_info({Tag,Socket}, State) when
       (Tag =:= tcp_closed orelse Tag =:= ssl_closed),
       Socket =:= (State#state.socket)#exo_socket.socket ->
-    ?debug("got tag ~p\n", [{Tag,Socket}]),
+    lager:debug("got tag ~p\n", [{Tag,Socket}]),
     CSt0 = State#state.state,
     case apply(State#state.module, close, [State#state.socket,CSt0]) of
 	{ok,CSt1} ->
@@ -251,7 +250,7 @@ handle_info({Tag,Socket}, State) when
 handle_info({Tag,Socket,Error}, State) when 
       (Tag =:= tcp_error orelse Tag =:= ssl_error),
       Socket =:= (State#state.socket)#exo_socket.socket ->
-    ?debug("got error ~p\n", [{Tag,Socket,Error}]),
+    lager:debug("got error ~p\n", [{Tag,Socket,Error}]),
     CSt0 = State#state.state,
     case apply(State#state.module, error, [State#state.socket,Error,CSt0]) of
 	{ok,CSt1} ->
@@ -261,13 +260,13 @@ handle_info({Tag,Socket,Error}, State) when
     end;
 handle_info({timeout, Ref, {active, Value}}, 
 	    State=#state {active_timer = Ref, socket = S}) ->
-    ?debug("got active_timeout ~p\n", [Value]),
+    lager:debug("got active_timeout ~p\n", [Value]),
     maybe_flow_control(S, fill),
     exo_socket:setopts(State#state.socket, [{active,Value}]),
     {noreply, State#state {active_timer = undefined}};
 
 handle_info(_Info, State) ->
-    ?debug("Got info: ~p\n", [_Info]),
+    lager:debug("Got info: ~p\n", [_Info]),
     ret({noreply, State}).
 
 %%--------------------------------------------------------------------
@@ -325,7 +324,7 @@ ret(R) ->
 %% continued from handle_info/2
 handle_reuse_data(Rest, #state{module = M, state = MSt} = State) ->
     Config = decode_reuse_config(Rest),
-    ?debug("Decoded reuse config: ~p~n"
+    lager:debug("Decoded reuse config: ~p~n"
 	 "State = ~p~n", [Config, State]),
     {ok, MSt1} = M:received_reuse_info(Config, MSt),
     State1 = State#state{state = MSt1},
@@ -339,9 +338,9 @@ handle_reuse_data(Rest, #state{module = M, state = MSt} = State) ->
     ret({noreply, State1}).
 
 handle_socket_data(Data, State=#state {module = M, state = CSt0, socket = S}) ->
-    ?debug("call ~p", [M]),
+    lager:debug("call ~p", [M]),
     ModResult = apply(M, data, [S,Data,CSt0]),
-    ?debug("result ~p", [ModResult]),
+    lager:debug("result ~p", [ModResult]),
     maybe_flow_control(S, use, 1), %% Count down
     handle_module_result(ModResult, State).
 
