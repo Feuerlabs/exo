@@ -149,7 +149,10 @@ connect(unix, File, Protos=[tcp|_], Opts0, Timeout)
 			      opts     = Opts2,
 			      tags     = {tcp,tcp_closed,tcp_error}
 			    },
-	    maybe_auth(connect_upgrade(X, tl(Protos), Timeout), client, Opts2);
+	    case connect_upgrade(X, tl(Protos), Timeout) of
+		{ok, X1} -> maybe_auth(X1, client, Opts2);
+		Error -> Error
+	    end;
 	Error ->
 	    Error
     end;
@@ -178,7 +181,10 @@ connect(Host, Port, Protos=[tcp|_], Opts0, Timeout) -> %% tcp socket
 			      opts     = Opts2,
 			      tags     = {tcp,tcp_closed,tcp_error}
 			    },
-	    maybe_auth(connect_upgrade(X, tl(Protos), Timeout), client, Opts2);
+	    case connect_upgrade(X, tl(Protos), Timeout) of
+		{ok, X1} -> maybe_auth(X1, client, Opts2);
+		Error -> Error
+	    end;
 	Error ->
 	    Error
     end.
@@ -190,14 +196,15 @@ maybe_auth(X, Role, Opts) ->
     case proplists:get_bool(delay_auth, Opts) of
 	true ->
 	    lager:debug("Delaying authentication~n", []),
-	    X;
+	    {ok, X};
 	false ->
 	    maybe_auth_(X, Role, Opts)
     end.
 
-maybe_auth_({ok,X}, Role0, Opts) ->
+maybe_auth_(X, Role0, Opts) ->
     case proplists:get_value(auth, Opts, false) of
 	false ->
+	    lager:debug("No authentication~n", []),
 	    {ok, X};
 	L when is_list(L) ->
 	    Role = proplists:get_value(role, L, Role0),
@@ -205,7 +212,8 @@ maybe_auth_({ok,X}, Role0, Opts) ->
 	    %% Here, we should check if the session is already authenticated
 	    %% Otherwise, initiate user-level authentication.
 	    case lists:keyfind(Role, 1, L) of
-		false -> {ok, X};
+		false -> 
+		    {ok, X};
 		{_, ROpts} ->
 		    lager:debug("ROpts = ~p~n", [ROpts]),
 		    case lists:keyfind(mod, 1, ROpts) of
@@ -248,7 +256,7 @@ preserve_active(F, S) ->
 
 authenticate(#exo_socket{mauth = undefined} = XS) ->
     lager:debug("authenticate(~p)~n", [XS]),
-    maybe_auth({ok,XS}, XS#exo_socket.opts);
+    maybe_auth(XS, XS#exo_socket.opts);
 authenticate(#exo_socket{} = XS) ->
     lager:debug("No authentication options defined.~n", []),
     {ok, XS}.
@@ -346,17 +354,21 @@ async_socket(Listen, Socket, AuthOpts)
 		ok ->
 		    {ok,Mod} = inet_db:lookup_socket(Listen#exo_socket.socket),
 		    inet_db:register_socket(Socket, Mod),
-		    X = Listen#exo_socket { transport=Socket, socket=Socket },
-		    case X#exo_socket.flow of
-			undefined -> 
-			    do_nothing;
-			Flow -> 
-			    ok = exo_flow:new(Socket, Flow)
-		    end,
-		    maybe_auth(
-		      accept_upgrade(X, tl(X#exo_socket.protocol), infinity),
-		      server,
-		      X#exo_socket.opts ++ AuthOpts);
+		    X = Listen#exo_socket {transport=Socket, socket=Socket},
+		    case accept_upgrade(X, 
+					tl(X#exo_socket.protocol), 
+					infinity) of
+			{ok, X1} ->
+			    case X1#exo_socket.flow of
+				undefined ->  do_nothing;
+				Flow -> ok = exo_flow:new(Socket, Flow)
+			    end,
+			    maybe_auth(X1,server, 
+				       X#exo_socket.opts ++ AuthOpts);
+			Error ->
+			    prim_inet:close(Socket),
+			    Error
+		    end;
 		Error ->
 		    prim_inet:close(Socket),
 		    Error
@@ -457,14 +469,23 @@ accept_probe_ssl(X=#exo_socket { mdata=M, socket=S,
 	    Error
     end.
 
-ssl_accept(Socket, Options, Timeout) ->    
-    case ssl:ssl_accept(Socket, Options, Timeout) of
-	{error, ssl_not_started} ->
-	    ssl:start(),
-	    ssl:ssl_accept(Socket, Options, Timeout);
-	Result ->
-	    Result
+ssl_accept(Socket, Options, Timeout) -> 
+    try
+	begin
+	    case ssl:ssl_accept(Socket, Options, Timeout) of
+		{error, ssl_not_started} ->
+		    ssl:start(),
+		    ssl:ssl_accept(Socket, Options, Timeout);
+		Result ->
+		    Result
+	    end
+	end
+    catch
+	error:Error ->
+	    lager:debug("ssl_accept failed, reason ~p", [Error]),
+	    {error, einval}
     end.
+
 
 
 request_type(<<"GET", _/binary>>) ->    http;
@@ -487,25 +508,30 @@ request_type(_) ->
 %%
 close(#exo_socket { mdata = M, socket = S, flow = undefined}) ->
     M:close(S);
-close(#exo_socket { mdata = M, socket = S}) ->
-    exo_flow:delete(S), %% Delete both incoming and outgoing flow control
+close(#exo_socket { mdata = M, socket = S, transport = T}) ->
+    exo_flow:delete(T), %% Delete both incoming and outgoing flow control
     M:close(S).
 
-shutdown(#exo_socket { mdata = M, socket = S}, How) ->
+shutdown(#exo_socket {mdata = M, socket = S, flow = undefined}, How) ->
+    M:shutdown(S, How);
+shutdown(#exo_socket {mdata = M, socket = S, transport = T}, How) ->
+    exo_flow:delete(T), %% Delete both incoming and outgoing flow control
     M:shutdown(S, How).
+
     
 send(#exo_socket {flow = undefined} = X, Data) ->
     send1(X, Data);
-send(#exo_socket {socket = S, flow = _Flow} = X, Data) ->
-    exo_flow:fill({out, S}),
-    case exo_flow:use({out,S}, 1) of
+send(X=#exo_socket {socket = S, transport = T} = X, Data) ->
+    lager:debug("socket ~p", [S]),
+    exo_flow:fill({out,T}),
+    case exo_flow:use({out,T}, 1) of
 	ok -> 
 	    send1(X, Data);
 	{action, throw} -> 
 	    lager:warning("Message thrown due to overload protection"),
 	    ok;
 	{action, wait} ->
-	    case exo_flow:fill_time({out, S}, 1) of
+	    case exo_flow:fill_time({out, T}, 1) of
 		{ok, WaitTime} when WaitTime > 0 ->
 		    lager:debug("fill_time ~p", [WaitTime]),
 		    timer:sleep(trunc(WaitTime * 1000));

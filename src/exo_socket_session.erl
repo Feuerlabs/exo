@@ -409,13 +409,13 @@ handle_active(State=#state {socket = S, active = Active}) ->
 
 maybe_flow_control(#exo_socket {flow = undefined}, _F) ->
     ok;
-maybe_flow_control(#exo_socket {socket = S}, F) ->
-    exo_flow:F({in, S}).
+maybe_flow_control(#exo_socket {transport = T}, F) ->
+    exo_flow:F({in, T}).
 
-maybe_flow_control(#exo_socket {flow = undefined}, _F, _T) ->
+maybe_flow_control(#exo_socket {flow = undefined}, _F, _X) ->
     ok;
-maybe_flow_control(#exo_socket {socket = S}, F, T) ->
-    exo_flow:F({in, S},T).
+maybe_flow_control(#exo_socket {transport = T}, F, X) ->
+    exo_flow:F({in, T},X).
 
 get_parent(_) ->
     hd(get('$ancestors')).

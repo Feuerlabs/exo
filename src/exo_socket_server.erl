@@ -255,9 +255,9 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_info({inet_async, LSocket, Ref, {ok,Socket}} = _Msg, State) when 
-      (State#state.listen)#exo_socket.socket =:= LSocket,
-      Ref =:= State#state.ref ->
+handle_info({inet_async, LSocket, Ref, {ok,Socket}} = _Msg, State) 
+  when (State#state.listen)#exo_socket.socket =:= LSocket,
+     Ref =:= State#state.ref ->
     lager:debug("<-- ~p~n", [_Msg]),
     Listen = State#state.listen,
     NewAccept = exo_socket:async_accept(Listen),
@@ -282,8 +282,8 @@ handle_info({inet_async, LSocket, Ref, {ok,Socket}} = _Msg, State) when
 	    {stop, Reason, State}
     end;
 %% handle {ok,Socket} on bad ref ?
-handle_info({inet_async, _LSocket, Ref, {error,Reason}} = _Msg, State) when
-      Ref =:= State#state.ref ->
+handle_info({inet_async, _LSocket, Ref, {error,Reason}} = _Msg, State) 
+  when Ref =:= State#state.ref ->
     lager:debug("~p: ~p~n", [?MODULE, _Msg]),
     case exo_socket:async_accept(State#state.listen) of
 	{ok,Ref} ->
