@@ -67,9 +67,6 @@
 
 -import(lists, [reverse/1]).
 
--define(dbg(F, A), lager:debug(F, A)).
-
-
 %%
 %% Perform a HTTP/1.1 GET
 %%
@@ -371,16 +368,16 @@ request(S, Req, Body, Proxy, Timeout) ->
 	    %% FIXME: take care of POST 100-continue
 	    case recv_response(S, Timeout) of
 		{ok, Resp} ->
-		    ?dbg("response: ~p\n", [Resp]),
+		    lager:debug("response: ~p\n", [Resp]),
 		    case recv_body(S, Resp, Timeout) of
 			{ok,RespBody} ->
 			    {ok,Resp,RespBody};
 			Error ->
-			    ?dbg("body: ~p\n", [Error]),
+			    lager:debug("body: ~p\n", [Error]),
 			    Error
 		    end;
 		Error -> 
-		    ?dbg("response: ~p\n", [Error]),
+		    lager:debug("response: ~p\n", [Error]),
 		    Error
 	    end;
 	Error -> Error
@@ -416,16 +413,17 @@ open(Request,Timeout) ->
 	    exo_socket:setopts(S, [{mode,binary},{packet,http}]),
 	    {ok,S};
 	Error ->
+	    lager:debug("open failed, reason ~p\n",[Error]),
 	    Error
     end.
 
 close(S, Req, Resp) ->
     case do_close(Req,Resp) of
 	true ->
-	    ?dbg("real close\n",[]),
+	    lager:debug("real close\n",[]),
 	    exo_socket:close(S);
 	false ->
-	    ?dbg("session close\n",[]),
+	    lager:debug("session close\n",[]),
 	    exo_socket_cache:close(S)
     end.
 
@@ -488,7 +486,7 @@ send(Socket, Method, URI, Version, H, Body, Proxy) ->
 	 end,
     Request = [format_request(Method,Url,Version,Proxy),?CRNL,
 	       format_hdr(H3),?CRNL, Body],
-    ?dbg("> ~p\n", [Request]),
+    lager:debug("> ~p\n", [Request]),
     exo_socket:send(Socket, Request).
 
 %%
@@ -630,7 +628,7 @@ recv_body_eof(Socket,Timeout) ->
     recv_body_eof(Socket,fun(Data,Acc) -> [Data|Acc] end, [], Timeout).
     
 recv_body_eof(Socket,Fun,Acc,Timeout) ->
-    ?dbg("RECV_BODY_EOF: tmo=~w\n", [Timeout]),    
+    lager:debug("RECV_BODY_EOF: tmo=~w\n", [Timeout]),    
     exo_socket:setopts(Socket, [{packet,raw},{mode,binary}]),
     recv_body_eof1(Socket,Fun,Acc,Timeout).
 
@@ -652,10 +650,10 @@ recv_body_data(Socket, Len, Timeout) ->
     recv_body_data(Socket, Len, fun(Data,Acc) -> [Data|Acc] end, [], Timeout).
 
 recv_body_data(_Socket, 0, _Fun, _Acc, _Timeout) ->
-    ?dbg("RECV_BODY_DATA: len=0, tmo=~w\n", [_Timeout]),
+    lager:debug("RECV_BODY_DATA: len=0, tmo=~w\n", [_Timeout]),
     {ok, <<>>};
 recv_body_data(Socket, Len, Fun, Acc, Timeout) ->
-    ?dbg("RECV_BODY_DATA: len=~p, tmo=~w\n", [Len,Timeout]),    
+    lager:debug("RECV_BODY_DATA: len=~p, tmo=~w\n", [Len,Timeout]),    
     exo_socket:setopts(Socket, [{packet,raw},{mode,binary}]),
     case exo_socket:recv(Socket, Len, Timeout) of
 	{ok, Bin} ->
@@ -675,20 +673,20 @@ recv_body_chunks(Socket, Timeout) ->
 
 recv_body_chunks(Socket, Fun, Acc, Timeout) ->
     exo_socket:setopts(Socket, [{packet,line},{mode,list}]),
-    ?dbg("RECV_BODY_CHUNKS: tmo=~w\n", [Timeout]),
+    lager:debug("RECV_BODY_CHUNKS: tmo=~w\n", [Timeout]),
     recv_body_chunk(Socket, Fun, Acc, Timeout).
 
 recv_body_chunk(S, Fun, Acc, Timeout) ->
     case exo_socket:recv(S, 0, Timeout) of
 	{ok,Line} ->
-	    ?dbg("CHUNK-Line: ~p\n", [Line]),
+	    lager:debug("CHUNK-Line: ~p\n", [Line]),
 	    {ChunkSize,_Ext} = chunk_size(Line),
-	    ?dbg("CHUNK: ~w\n", [ChunkSize]),
+	    lager:debug("CHUNK: ~w\n", [ChunkSize]),
 	    if ChunkSize =:= 0 ->
 		    exo_socket:setopts(S, [{packet,httph}]),
 		    case recv_chunk_trailer(S, [], Timeout) of
 			{ok,_TR} ->
-			    ?dbg("CHUNK TRAILER: ~p\n", [_TR]),
+			    lager:debug("CHUNK TRAILER: ~p\n", [_TR]),
 			    exo_socket:setopts(S, [{packet,http},
 						   {mode,binary}]),
 			    {ok,list_to_binary(reverse(Acc))};
@@ -708,7 +706,7 @@ recv_body_chunk(S, Fun, Acc, Timeout) ->
 				    Acc1 = Fun(Bin,Acc),
 				    recv_body_chunk(S,Fun,Acc1,Timeout);
 				{ok, _Data} ->
-				    ?dbg("out of sync ~p\n", [_Data]),
+				    lager:debug("out of sync ~p\n", [_Data]),
 				    {error, sync_error};
 				Error ->
 				    Error
@@ -748,28 +746,28 @@ recv_hc(S, R, H, Timeout) ->
 	{ok, Hdr} ->
 	    case Hdr of
 		http_eoh ->
-		    ?dbg("EOH <\n", []),
+		    lager:debug("EOH <\n", []),
 		    Other = reverse(H#http_chdr.other),
 		    H1 = H#http_chdr { other = Other },
 		    R1 = R#http_request { headers = H1 },
-		    ?dbg("< ~s~s\n", [format_request(R1,true),
+		    lager:debug("< ~s~s\n", [format_request(R1,true),
 				      format_headers(fmt_chdr(H1))]),
 		    {ok, R1};
 		{http_header,_,K,_,V} ->
-		    ?dbg("HEADER < ~p ~p\n", [K, V]),
+		    lager:debug("HEADER < ~p ~p\n", [K, V]),
 		    recv_hc(S,R,set_chdr(K,V,H), Timeout);
 		Got ->
-		    ?dbg("HEADER ERROR ~p\n", [Got]),
+		    lager:debug("HEADER ERROR ~p\n", [Got]),
 		    {error, Got}
 	    end;
 	{error, {http_error, ?CRNL}} -> 
-	    ?dbg("ERROR CRNL <\n", []),
+	    lager:debug("ERROR CRNL <\n", []),
 	    recv_hc(S, R, H,Timeout);
 	{error, {http_error, ?NL}} -> 
-	    ?dbg("ERROR NL <\n", []),
+	    lager:debug("ERROR NL <\n", []),
 	    recv_hc(S, R, H,Timeout);
 	Error -> 
-	    ?dbg("RECV ERROR ~p <\n", [Error]),
+	    lager:debug("RECV ERROR ~p <\n", [Error]),
 	    Error
     end.
 
@@ -778,24 +776,24 @@ recv_hs(S, R, H, Timeout) ->
 	{ok, Hdr} ->
 	    case Hdr of
 		http_eoh ->
-		    ?dbg("EOH <\n", []),
+		    lager:debug("EOH <\n", []),
 		    Other = reverse(H#http_shdr.other),
 		    H1 = H#http_shdr { other = Other },
 		    R1 = R#http_response { headers = H1 },
-		    ?dbg("< ~s~s\n", [format_response(R1),
+		    lager:debug("< ~s~s\n", [format_response(R1),
 				      format_hdr(H1)]),
 		    {ok, R1};
 		{http_header,_,K,_,V} ->
-		    ?dbg("HEADER < ~p ~p\n", [K, V]),
+		    lager:debug("HEADER < ~p ~p\n", [K, V]),
 		    recv_hs(S,R,set_shdr(K,V,H),Timeout);
 		Got ->
 		    {error, Got}
 	    end;
 	{error, {http_error, ?CRNL}} -> 
-	    ?dbg("ERROR CRNL <\n", []),
+	    lager:debug("ERROR CRNL <\n", []),
 	    recv_hs(S, R, H,Timeout);
 	{error, {http_error, ?NL}} -> 
-	    ?dbg("ERROR NL <\n", []),
+	    lager:debug("ERROR NL <\n", []),
 	    recv_hs(S, R, H, Timeout);
 	Error -> Error
     end.
