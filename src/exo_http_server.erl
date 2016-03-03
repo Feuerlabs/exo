@@ -39,14 +39,13 @@
 -type ip_address() :: {integer(),integer(),integer(),integer()} |
 		      {integer(),integer(),integer(),integer(),integer(),integer()}.
 -type cred() :: {basic,path(),user(),password(),realm()} |
-		{digest,path(),user(),password(),realm()}.
+		{digest,path(),user(),password(),realm()}. %% Old type
 -type guard() :: ip_address() | 
 		 {ip_address(), integer()} |
-		 {ip_address(), string()} | %% unix domain socket
 		 afunix |
 		 http |
 		 https.
--type action() :: accept | reject | {access , list(cred())}.
+-type action() :: accept | reject | {accept , list(cred())}.
 -type access() :: cred() | {guard(), action()}.
 
 -record(state,
@@ -300,14 +299,13 @@ match_access(afunix, #exo_socket {mdata = afunix}, _Request) ->
     true;
 match_access(afunix, _Socket, _Request) ->
     false;
-match_access(http, _Socket, _Request) ->
+match_access(http, Socket, _Request) ->
     %%% ???
-    true;
-match_access(https, _Socket, _Request) ->
+    not exo_socket:is_ssl(Socket);
+match_access(https, Socket, _Request) ->
     %%% ???
-    true;
-match_access({Ip, Port}, Socket, _R) 
-  when is_integer(Port) ->
+    exo_socket:is_ssl(Socket);
+match_access({Ip, Port}, Socket, _R) ->
     case exo_socket:peername(Socket) of
 	{ok, {Ip, Port}} -> true;
 	_ -> false
@@ -616,10 +614,9 @@ validate_guard([Guard | Rest]) ->
 	ok -> validate_guard(Rest);
 	E -> E
     end;
-validate_guard({Tag, GuardList}) 
-  when Tag =:= any; Tag =:= all -> validate_guard(GuardList);
-validate_guard({IP, Port}) 
-  when is_integer(Port); is_list(Port) -> validate_ip(IP);
+validate_guard({Tag, GuardList}) when Tag =:= any; Tag =:= all -> 
+    validate_guard(GuardList);
+validate_guard({IP, Port}) when is_integer(Port) -> validate_ip(IP);
 validate_guard(http) -> ok;
 validate_guard(https) -> ok;
 validate_guard(afunix) -> ok;
