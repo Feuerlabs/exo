@@ -413,6 +413,14 @@ accept_upgrade(X=#exo_socket { mdata = M }, Protos0, Timeout) ->
 	    lager:debug("SSL upgrade, options = ~w\n", [SSLOpts]),
 	    lager:debug("before ssl_accept opt=~w\n", 
 		 [getopts(X, [active,packet,mode])]),
+	    if X#exo_socket.mctl =:= afunix ->
+		    afunix:setsockname(X#exo_socket.socket, {{127,0,0,1},1234}),
+		    afunix:setpeername(X#exo_socket.socket, {{127,0,0,1},1235}),
+		    ok;
+	       true ->
+		    ok
+	    end,
+	    
 	    case ssl_accept(X#exo_socket.socket, SSLOpts, Timeout) of
 		{ok,S1} ->
 		    lager:debug("ssl_accept opt=~w\n", 
