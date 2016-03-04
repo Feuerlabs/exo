@@ -307,15 +307,42 @@ match_access(https, Socket, _Request) ->
     exo_socket:is_ssl(Socket);
 match_access({Ip, Port}, Socket, _R) ->
     case exo_socket:peername(Socket) of
-	{ok, {Ip, Port}} -> true;
+	{ok, {PeerIP, PeerPort}} ->
+	    ((Port =:= '*') orelse (Port =:= PeerPort)) andalso
+		match_ip(Ip, PeerIP);
 	_ -> false
     end;
 match_access(Ip, Socket, _R) ->
     case exo_socket:peername(Socket) of
-	{ok, {Ip, _Port}} -> true;
+	{ok, {PeerIP, _Port}} -> 
+	    match_ip(Ip, PeerIP);
 	_ -> false
     end.
- 
+
+match_ip({Pa,Pb,Pc,Pd}, {A,B,C,D}) ->
+    if ((Pa =:= '*') orelse (Pa =:= A)) andalso
+       ((Pb =:= '*') orelse (Pb =:= B)) andalso
+       ((Pc =:= '*') orelse (Pc =:= C)) andalso
+       ((Pd =:= '*') orelse (Pd =:= D)) ->
+	    true;
+       true -> false
+    end;
+match_ip({Pa,Pb,Pc,Pd,Pe,Pf,Pg,Ph}, {A,B,C,D,E,F,G,H}) ->
+    if ((Pa =:= '*') orelse (Pa =:= A)) andalso
+       ((Pb =:= '*') orelse (Pb =:= B)) andalso
+       ((Pc =:= '*') orelse (Pc =:= C)) andalso
+       ((Pd =:= '*') orelse (Pd =:= D)) andalso
+       ((Pe =:= '*') orelse (Pe =:= E)) andalso
+       ((Pf =:= '*') orelse (Pf =:= F)) andalso
+       ((Pg =:= '*') orelse (Pg =:= G)) andalso
+       ((Ph =:= '*') orelse (Ph =:= H)) ->
+	    true;
+       true -> false
+    end;
+match_ip(_, _) ->
+    false.
+
+
 handle_creds(Socket, Request, Body, Creds, State) ->
     Header = Request#http_request.headers,
     Autorization = get_authorization(Header#http_chdr.authorization),
@@ -616,25 +643,43 @@ validate_guard([Guard | Rest]) ->
     end;
 validate_guard({Tag, GuardList}) when Tag =:= any; Tag =:= all -> 
     validate_guard(GuardList);
+validate_guard({IP, '*'}) -> validate_ip(IP);
 validate_guard({IP, Port}) when is_integer(Port) -> validate_ip(IP);
 validate_guard(http) -> ok;
 validate_guard(https) -> ok;
 validate_guard(afunix) -> ok;
 validate_guard(IP) 
   when is_tuple(IP) andalso 
-       (tuple_size(IP) =:= 4 orelse tuple_size(IP) =:= 6) -> 
+       (tuple_size(IP) =:= 4 orelse tuple_size(IP) =:= 8) -> 
     validate_ip(IP);
 validate_guard(_Other) -> 
     lager:error("Unknown access guard ~p", [_Other]),
     {error, invalid_access}.
 
-validate_ip({A, B, C, D}) 
-  when is_integer(A), is_integer(B), is_integer(C), is_integer(D) ->
-    ok;
-validate_ip({A, B, C, D, E, F})
-  when is_integer(A), is_integer(B), is_integer(C), 
-       is_integer(D), is_integer(E), is_integer(F) ->
-    ok;
+validate_ip(_IP={A, B, C, D}) ->
+    if (is_integer(A) orelse (A =:= '*')) andalso
+       (is_integer(B) orelse (B =:= '*')) andalso
+       (is_integer(C) orelse (C =:= '*')) andalso
+       (is_integer(D) orelse (D =:= '*')) ->
+	    ok;
+       false ->
+	    lager:error("Illegal IP address ~p", [_IP]),
+	    {error, invalid_access}
+    end;
+validate_ip(_IP={A, B, C, D, E, F, G, H}) ->
+    if (is_integer(A) orelse (A =:= '*')) andalso
+       (is_integer(B) orelse (B =:= '*')) andalso
+       (is_integer(C) orelse (C =:= '*')) andalso
+       (is_integer(D) orelse (D =:= '*')) andalso
+       (is_integer(E) orelse (E =:= '*')) andalso
+       (is_integer(F) orelse (F =:= '*')) andalso
+       (is_integer(G) orelse (G =:= '*')) andalso
+       (is_integer(H) orelse (H =:= '*')) ->
+	    ok;
+       false ->
+	    lager:error("Illegal IP address ~p", [_IP]),
+	    {error, invalid_access}
+    end;
 validate_ip(_Other) ->
     lager:error("Illegal IP address ~p", [_Other]),
     {error, invalid_access}.
