@@ -106,7 +106,7 @@ do_start(Start, Port, Options) ->
     {ServerOptions,Options1} = opts_take([request_handler,access,private_key],
 					 Options),
     Dir = code:priv_dir(exo),
-    Access = lists:sort(proplists:get_value(access, Options, [])),
+    Access = proplists:get_value(access, Options, []),
     case validate_auth(Access) of
 	ok ->
 	    exo_socket_server:Start(Port, 
@@ -136,7 +136,7 @@ init(Socket, Options) ->
     {ok, _SockName} = exo_socket:sockname(Socket),
     lager:debug("exo_http_server: connection from peer: ~p, sockname: ~p,\n"
 		"options ~p", [_PeerName, _SockName, Options]),
-    Access = lists:sort(proplists:get_value(access, Options, [])),
+    Access = proplists:get_value(access, Options, []),
     Module = proplists:get_value(request_handler, Options, undefined),
     PrivateKey = proplists:get_value(private_key, Options, ""),
     {ok, #state{access = Access, private_key=PrivateKey,
