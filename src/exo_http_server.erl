@@ -646,7 +646,7 @@ validate_ip(_IP={A, B, C, D}) ->
        (is_integer(C) orelse (C =:= '*')) andalso
        (is_integer(D) orelse (D =:= '*')) ->
 	    ok;
-       false ->
+       true ->
 	    lager:error("Illegal IP address ~p", [_IP]),
 	    {error, invalid_access}
     end;
@@ -660,7 +660,7 @@ validate_ip(_IP={A, B, C, D, E, F, G, H}) ->
        (is_integer(G) orelse (G =:= '*')) andalso
        (is_integer(H) orelse (H =:= '*')) ->
 	    ok;
-       false ->
+       true ->
 	    lager:error("Illegal IP address ~p", [_IP]),
 	    {error, invalid_access}
     end;
