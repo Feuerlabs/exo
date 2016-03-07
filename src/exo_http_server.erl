@@ -378,17 +378,9 @@ handle_basic_auth(_Socket, _Request, _Body, _,
 handle_digest_auth(_Socket, Request, _Body, {digest,AuthParams},
 		   Cred={digest,_Path,_User,_Password,_Realm}, State) ->
     Response = proplists:get_value(<<"response">>,AuthParams,""),
-    Nonce = proplists:get_value(<<"nonce">>,AuthParams,""),
-    DigestUriValue = proplists:get_value(<<"uri">>,AuthParams,""),
-    %% FIXME! Verify Nonce!!!
-    A1 = a1(Cred),
-    %% lager:debug("A1 = \"~s\"", [A1]),
-    HA1 = hex(crypto:md5(A1)),
-    A2 = a2(Request#http_request.method, DigestUriValue),
-    %% lager:debug("A2 = \"~s\"", [A2]),
-    HA2 = hex(crypto:md5(A2)),
-    Digest = hex(kd(HA1, Nonce++":"++HA2)),
-    %% lager:debug("Digest = \"~s\"", [Digest]),
+    Method = Request#http_request.method,
+    Digest = exo_http:make_digest_response(Cred, Method, AuthParams),
+    %% io:format("response=~p, digest=~p\n", [Response,Digest]),
     if Digest =:= Response ->
 	    ok;
        true ->
@@ -397,10 +389,10 @@ handle_digest_auth(_Socket, Request, _Body, {digest,AuthParams},
 handle_digest_auth(_Socket, Request, _Body, _, Cred, State) ->
     digest_required(Request, Cred, State).
 
-digest_required(Request,_Cred={digest,Path,_User,_Password,Realm},State) ->
+digest_required(Request,_Cred={digest,_Path,_User,_Password,Realm},State) ->
     Nonce = nonce_value(Request, State),
     {required, ["Digest realm=",?Q,Realm,?Q," ",
-		"url=",?Q,Path,?Q," ",
+%%		"url=",?Q,Path,?Q," ",
 		"nonce=",?Q,Nonce,?Q], State}.
 
 nonce_value(Request, State) ->
@@ -410,14 +402,6 @@ nonce_value(Request, State) ->
     TimeStamp = hex(<<T:64>>),
     hex(crypto:md5([TimeStamp,":",ETag,":",State#state.private_key])).
 
-a1({_,_Path,User,Password,Realm}) ->
-    iolist_to_binary([User,":",Realm,":",Password]).
-
-a2(Method, Uri) ->
-    iolist_to_binary([atom_to_list(Method),":",Uri]).
-
-kd(Secret, Data) ->
-    crypto:md5([Secret,":",Data]).
 
 %% convert binary to ASCII hex
 hex(Bin) ->

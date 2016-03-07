@@ -44,6 +44,7 @@
 %% parse interface
 -export([convert_uri/1]).
 -export([tokens/1]).
+-export([get_authenticate/1]).
 
 -export([set_chdr/3,
 	 set_shdr/3]).
@@ -60,13 +61,18 @@
 	 make_response/4, 
 	 auth_basic_encode/2,
 	 url_encode/1,
-	 make_headers/2
+	 make_headers/2,
+	 make_basic_request/2,
+	 make_digest_request/2
 	]).
 -export([url_decode/1,
 	 parse_query/1]).
+-export([make_digest_response/3]).
+
 
 -import(lists, [reverse/1]).
 
+-define(Q, $\").
 %%
 %% Perform a HTTP/1.1 GET
 %%
@@ -909,9 +915,38 @@ auth_basic_encode(User,undefined) ->
 auth_basic_encode(User,Pass) ->
     base64:encode_to_string(to_list(User)++":"++to_list(Pass)).
 
-make_headers(undefined, _Pass) -> [];
-make_headers(User, Pass) ->
+make_headers(User, Pass) ->  %% bad name should go
+    make_basic_request(User, Pass). 
+
+make_basic_request(undefined, _Pass) -> [];
+make_basic_request(User, Pass) ->
     [{"Authorization", "Basic "++auth_basic_encode(User, Pass)}].
+
+make_digest_request(undefined, _Params) -> [];
+make_digest_request(User, Params) ->
+    [{"Authorization", "Digest " ++ 
+	  make_param(<<"username">>,User) ++
+	  lookup_param(<<"realm">>, Params) ++
+	  lookup_param(<<"nonce">>, Params) ++
+	  lookup_param(<<"uri">>, Params) ++
+	  lookup_param(<<"response">>, Params)}].
+
+make_param(Key, Value) ->
+    to_key(Key)++"="++to_value(Value).
+
+lookup_param(Key, List) ->
+    case proplists:get_value(Key, List) of
+	undefined -> [];
+	Value -> ", "++make_param(Key, Value)
+    end.
+
+to_key(Bin) when is_binary(Bin) -> binary_to_list(Bin);
+to_key(List) when is_list(List) -> List.
+
+to_value(Bin) when is_binary(Bin) -> [?Q]++binary_to_list(Bin)++[?Q];
+to_value(List) when is_list(List) -> [?Q]++List++[?Q];
+to_value(Atom) when is_atom(Atom) -> atom_to_list(Atom);
+to_value(Int) when is_integer(Int) -> integer_to_list(Int).
 
 %%
 %% Url encode a string
@@ -1138,3 +1173,57 @@ tokens(undefined) ->
 tokens(Line) ->
     string:tokens(string:to_lower(Line), ";").
 
+
+%% Read and parse WWW-Authenticate header value
+get_authenticate(undefined) ->
+    {none,[]};
+get_authenticate(<<>>) ->
+    {none,[]};
+get_authenticate(<<$\s,Cs/binary>>) ->
+    get_authenticate(Cs);
+get_authenticate(<<"Basic ",Cs/binary>>) ->
+    {basic, get_params(Cs)};
+get_authenticate(<<"Digest ",Cs/binary>>) ->
+    {digest, get_params(Cs)};
+get_authenticate(List) when is_list(List) ->
+    get_authenticate(list_to_binary(List)).
+
+get_params(Bin) ->
+    Ps = binary:split(Bin, <<" ">>, [global]),
+    [ case binary:split(P, <<"=">>) of
+	  [K,V] -> {K,unq(V)};
+	  [K] -> {K,true}
+      end || P <- Ps, P =/= <<>> ].
+
+%% "unquote" a string or a binary
+unq(String) when is_binary(String) -> unq(binary_to_list(String));
+unq([$\s|Cs]) -> unq(Cs);
+unq([?Q|Cs]) -> unq_(Cs);
+unq(Cs) -> Cs.
+
+unq_([?Q|_]) -> [];
+unq_([C|Cs]) -> [C|unq_(Cs)];
+unq_([]) -> [].
+
+make_digest_response(Cred, Method, AuthParams) ->
+    Nonce = proplists:get_value(<<"nonce">>,AuthParams,""),
+    DigestUriValue = proplists:get_value(<<"uri">>,AuthParams,""),
+    %% FIXME! Verify Nonce!!!
+    A1 = a1(Cred),
+    HA1 = hex(crypto:md5(A1)),
+    A2 = a2(Method, DigestUriValue),
+    HA2 = hex(crypto:md5(A2)),
+    hex(kd(HA1, Nonce++":"++HA2)).
+
+a1({digest,_Path,User,Password,Realm}) ->
+    iolist_to_binary([User,":",Realm,":",Password]).
+
+a2(Method, Uri) ->
+    iolist_to_binary([atom_to_list(Method),":",Uri]).
+
+kd(Secret, Data) ->
+    crypto:md5([Secret,":",Data]).
+
+hex(Bin) ->
+    [ element(X+1, {$0,$1,$2,$3,$4,$5,$6,$7,$8,$9,$a,$b,$c,$d,$e,$f}) ||
+	<<X:4>> <= Bin ].
