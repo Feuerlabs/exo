@@ -549,8 +549,9 @@ send(X=#exo_socket {socket = S, transport = T} = X, Data) ->
 	{action, wait} ->
 	    case exo_flow:fill_time({out, T}, 1) of
 		{ok, WaitTime} when WaitTime > 0 ->
-		    lager:debug("fill_time ~p", [WaitTime]),
-		    timer:sleep(trunc(WaitTime * 1000));
+		    Timeout = trunc(WaitTime * 1000),
+		    lager:warning("Message delayed ~w ms due to overload protection", [Timeout]),
+		    timer:sleep(Timeout);
 		_E ->
 		    lager:debug("fill_time error ~p", [_E])
 	    end,
