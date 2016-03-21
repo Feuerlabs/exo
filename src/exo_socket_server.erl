@@ -1,6 +1,6 @@
 %%%---- BEGIN COPYRIGHT -------------------------------------------------------
 %%%
-%%% Copyright (C) 2012 Feuerlabs, Inc. All rights reserved.
+%%% Copyright (C) 2012-2016 Feuerlabs, Inc. All rights reserved.
 %%%
 %%% This Source Code Form is subject to the terms of the Mozilla Public
 %%% License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -30,7 +30,6 @@
 -export([behaviour_info/1]).
 
 -include("exo_socket.hrl").
--include("log.hrl").
 
 %% -define(debug(Fmt,Args), ok).
 %% -define(error(Fmt,Args), error_logger:format(Fmt, Args)).
@@ -145,7 +144,7 @@ reusable_sessions(P) ->
 %% @end
 %%--------------------------------------------------------------------
 init([Port,Protos,Options,Module,Args] = _X) ->
-    ?debug("~p: init(~p)~n", [?MODULE, _X]),
+    lager:debug("~p: init(~p)~n", [?MODULE, _X]),
     Active = proplists:get_value(active, Options, true),
     ReuseMode = proplists:get_value(reuse_mode, Options, none),
     Options1 = proplists:delete(reuse_mode, proplists:delete(active, Options)),
@@ -189,8 +188,9 @@ init([Port,Protos,Options,Module,Args] = _X) ->
 			 {noreply, State::#state{}} |
 			 {stop, Reason::atom(), Reply::term(), State::#state{}}.
 
-handle_call({get_session, Host, Port, Opts}, From,
+handle_call({get_session, Host, Port, Opts} = _Req, From,
 	    #state{socket_reuse = Reuse} = State) ->
+    lager:debug("~p: ~p~n", [?MODULE, _Req]),
     Key = {Host, Port},
     case Reuse of
 	none ->
@@ -230,7 +230,7 @@ handle_call(reusable_sessions, _From, #state{socket_reuse = R} = State) ->
 	    {reply, [], State}
     end;
 handle_call(Request, _From, State) ->
-    ?debug("~p: handle_call(~p) not implemented!!", [?MODULE, Request]),
+    lager:debug("~p: handle_call(~p) not implemented!!", [?MODULE, Request]),
     Reply = ok,
     {reply, Reply, State}.
 
@@ -257,10 +257,10 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_info({inet_async, LSocket, Ref, {ok,Socket}} = _Msg, State) when 
-      (State#state.listen)#exo_socket.socket =:= LSocket,
-      Ref =:= State#state.ref ->
-    ?debug("<-- ~p~n", [_Msg]),
+handle_info({inet_async, LSocket, Ref, {ok,Socket}} = _Msg, State) 
+  when (State#state.listen)#exo_socket.socket =:= LSocket,
+     Ref =:= State#state.ref ->
+    lager:debug("<-- ~p~n", [_Msg]),
     Listen = State#state.listen,
     NewAccept = exo_socket:async_accept(Listen),
     %% Create the socket_session process
@@ -298,8 +298,9 @@ handle_info({inet_async, LSocket, Ref, {ok,Socket}} = _Msg, State) when
     end;
 
 %% handle {ok,Socket} on bad ref ?
-handle_info({inet_async, _LSocket, Ref, {error,Reason}}, State) when
-      Ref =:= State#state.ref ->
+handle_info({inet_async, _LSocket, Ref, {error,Reason}} = _Msg, State) 
+  when Ref =:= State#state.ref ->
+    lager:debug("~p: ~p~n", [?MODULE, _Msg]),
     case exo_socket:async_accept(State#state.listen) of
 	{ok,Ref} ->
 	    {noreply, State#state { ref = Ref }};
@@ -307,8 +308,9 @@ handle_info({inet_async, _LSocket, Ref, {error,Reason}}, State) when
 	    {stop, Reason, State}
 	    %% {noreply, State#state { ref = undefined }}
     end;
-handle_info({Pid, ?MODULE, connected, Host, Port},
+handle_info({Pid, ?MODULE, connected, Host, Port} = _Msg,
 	    #state{socket_reuse = #reuse{sessions = Sessions} = R} = State) ->
+    lager:debug("~p: ~p~n", [?MODULE, _Msg]),
     Session = dict:fetch(Key = {Host, Port}, Sessions),
     case Session of
 	{_, Pending} ->
@@ -319,10 +321,11 @@ handle_info({Pid, ?MODULE, connected, Host, Port},
     %% Pids = dict:store(Pid, {Host,Port}, R#reuse.session_pids),
     R1 = R#reuse{sessions = Sessions1},
     {noreply, State#state{socket_reuse = R1}};
-handle_info({Pid, reuse, Config},
+handle_info({Pid, reuse, Config} = _Msg,
 	    #state{socket_reuse = #reuse{mode = server,
 					 sessions = Sessions,
 					 session_pids = Pids} = R} = State) ->
+    lager:debug("~p: ~p~n", [?MODULE, _Msg]),
     {_, Port} = lists:keyfind(port, 1, Config),
     case [H || {host, H} <- Config] of
 	[Host|_] ->
@@ -333,13 +336,13 @@ handle_info({Pid, reuse, Config},
 	    R1 = R#reuse{sessions = Sessions1, session_pids = Pids1},
 	    {noreply, State#state{socket_reuse = R1}};
 	_Other ->
-	    ?error("strange reuse config: ~p~n", [_Other]),
+	    lager:error("strange reuse config: ~p~n", [_Other]),
 	    {noreply, State}
     end;
 handle_info({'DOWN', _, process, Pid, _},
 	    #state{socket_reuse = #reuse{sessions = Sessions,
 					 session_pids = Pids} = R} = State) ->
-    ?debug("~p got DOWN - Pid = ~p~n"
+    lager:debug("~p got DOWN - Pid = ~p~n"
 	   "Sessions = ~p~n"
 	   "Pids = ~p~n", [?MODULE, Pid, dict:to_list(Sessions),
 			   dict:to_list(Pids)]),

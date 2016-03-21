@@ -71,7 +71,7 @@ spawn_channel_proc(Host, Port, RHost, RPort, Options) ->
 						       RHost, RPort,
 						       {127,0,0,1}, 1234,
 						       5000) of
-			  {ok, Ci} ->
+			  {open, Ci} ->
 			      io:format("ssh: ~w connected to port ~w\n",
 					[Ci, Port]),
 			      Args = [{channel_cb, ?MODULE}, 

@@ -1,6 +1,6 @@
 %%%---- BEGIN COPYRIGHT -------------------------------------------------------
 %%%
-%%% Copyright (C) 2012 Feuerlabs, Inc. All rights reserved.
+%%% Copyright (C) 2012-2016 Feuerlabs, Inc. All rights reserved.
 %%%
 %%% This Source Code Form is subject to the terms of the Mozilla Public
 %%% License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -27,7 +27,6 @@
 
 -export([control/4]).
 
--include("log.hrl").
 -include("exo_socket.hrl").
 -include("exo_http.hrl").
 
@@ -37,6 +36,17 @@
 -type user() :: binary().
 -type password() :: binary().
 -type realm() :: string().
+-type ip_address() :: {integer(),integer(),integer(),integer()} |
+		      {integer(),integer(),integer(),integer(),integer(),integer()}.
+-type cred() :: {basic,path(),user(),password(),realm()} |
+		{digest,path(),user(),password(),realm()}. %% Old type
+-type guard() :: ip_address() | 
+		 {ip_address(), integer()} |
+		 afunix |
+		 http |
+		 https.
+-type action() :: accept | reject | {accept , list(cred())}.
+-type access() :: cred() | {guard(), action()}.
 
 -record(state,
 	{
@@ -44,8 +54,7 @@
 	  response,
 	  authorized = false :: boolean(),
 	  private_key = "" :: string(),
-	  access = [] :: [{basic,path(),user(),password(),realm()} |
-			  {digest,path(),user(),password(),realm()}],
+	  access = [] :: [access()],
 	  request_handler
 	}).
 
@@ -55,7 +64,7 @@
 	 response/5, response/6]).
 
 %% For testing
--export([test/0]).
+-export([test/0, test/1]).
 -export([handle_http_request/3]).
 
 %%-----------------------------------------------------------------------------
@@ -92,18 +101,24 @@ start_link(Port, Options) ->
 
 
 do_start(Start, Port, Options) ->
-    ?debug("exo_http_server: ~w: port ~p, server options ~p",
+    lager:debug("exo_http_server: ~w: port ~p, server options ~p",
 	   [Start, Port, Options]),
     {ServerOptions,Options1} = opts_take([request_handler,access,private_key],
 					 Options),
     Dir = code:priv_dir(exo),
-    exo_socket_server:Start(Port, [tcp,probe_ssl,http],
-			    [{active,once},{reuseaddr,true},
-			     {verify, verify_none},
-			     {keyfile, filename:join(Dir, "host.key")},
-			     {certfile, filename:join(Dir, "host.cert")} |
-			     Options1],
-			    ?MODULE, ServerOptions).
+    Access = proplists:get_value(access, Options, []),
+    case validate_auth(Access) of
+	ok ->
+	    exo_socket_server:Start(Port, 
+				    [tcp,probe_ssl,http],
+				    [{active,once},{reuseaddr,true},
+				     {verify, verify_none},
+				     {keyfile, filename:join(Dir, "host.key")},
+				     {certfile, filename:join(Dir, "host.cert")}
+				     | Options1],
+				    ?MODULE, ServerOptions);
+	E -> E
+    end.
 
 %%-----------------------------------------------------------------------------
 %% @doc
@@ -116,14 +131,16 @@ do_start(Start, Port, Options) ->
 		  {ok, State::#state{}}.
 
 init(Socket, Options) ->
-    {ok,{_IP,_Port}} = exo_socket:peername(Socket),
-    ?debug("exo_http_server: connection from: ~p : ~p,\n options ~p",
-	   [_IP, _Port, Options]),
+    lager:debug("exo_http_server: connection on: ~p ", [Socket]),
+    {ok, _PeerName} = exo_socket:peername(Socket),
+    {ok, _SockName} = exo_socket:sockname(Socket),
+    lager:debug("exo_http_server: connection from peer: ~p, sockname: ~p,\n"
+		"options ~p", [_PeerName, _SockName, Options]),
     Access = proplists:get_value(access, Options, []),
     Module = proplists:get_value(request_handler, Options, undefined),
     PrivateKey = proplists:get_value(private_key, Options, ""),
-    {ok, #state{ access = Access, private_key=PrivateKey,
-		 request_handler = Module}}.
+    {ok, #state{access = Access, private_key=PrivateKey,
+		request_handler = Module}}.
 
 %% To avoid a compiler warning. Should we actually support something here?
 %%-----------------------------------------------------------------------------
@@ -152,7 +169,7 @@ control(_Socket, _Request, _From, State) ->
 		  {stop, {error, Reason::term()}, NewState::#state{}}.
 
 data(Socket, Data, State) ->
-    ?debug("exo_http_server:~w: data = ~w\n", [self(),Data]),
+    lager:debug("exo_http_server:~w: data = ~w\n", [self(),Data]),
     case Data of
 	{http_request, Method, Uri, Version} ->
 	    CUri = exo_http:convert_uri(Uri),
@@ -168,7 +185,7 @@ data(Socket, Data, State) ->
 	{http_error, ?NL} ->
 	    {ok, State};
 	_ when is_list(Data); is_binary(Data) ->
-	    ?debug("exo_http_server: request data: ~p\n", [Data]),
+	    lager:debug("exo_http_server: request data: ~p\n", [Data]),
 	    {stop, {error,sync_error}, State};
 	Error ->
 	    {stop, Error, State}
@@ -185,7 +202,7 @@ data(Socket, Data, State) ->
 		   {ok, NewState::#state{}}.
 
 close(_Socket, State) ->
-    ?debug("exo_http_server: close\n", []),
+    lager:debug("exo_http_server: close\n", []),
     {ok,State}.
 
 %%-----------------------------------------------------------------------------
@@ -201,12 +218,12 @@ close(_Socket, State) ->
 		   {stop, {error, Reason::term()}, NewState::#state{}}.
 
 error(_Socket,Error,State) ->
-    ?debug("exo_http_serber: error = ~p\n", [Error]),
+    lager:debug("exo_http_serber: error = ~p\n", [Error]),
     {stop, Error, State}.
 
 
 handle_request(Socket, R, State) ->
-    ?debug("exo_http_server: request = ~s\n",
+    lager:debug("exo_http_server: request = ~s\n",
 	 [[exo_http:format_request(R),?CRNL,
 	   exo_http:format_hdr(R#http_request.headers),
 	   ?CRNL]]),
@@ -218,6 +235,9 @@ handle_request(Socket, R, State) ->
 		{required,AuthenticateValue,State} ->
 		    response(Socket,undefined, 401, "Unauthorized", "",
 			     [{'WWW-Authenticate', AuthenticateValue}]),
+		    {ok,State};
+		{error, unauthorised} ->
+		    response(Socket,undefined, 401, "Unauthorized", "", []),
 		    {ok,State}
 	    end;
 
@@ -227,27 +247,119 @@ handle_request(Socket, R, State) ->
 	    {stop, Error, State}
     end.
 
-handle_auth(_Socket, _Request, _Body, State) when State#state.authorized ->
+handle_auth(_Socket, _Request, _Body, State) 
+  when State#state.authorized ->
     ok;
-handle_auth(Socket, Request, Body, State) when not State#state.authorized ->
-    Access = State#state.access,
-    if Access =:= [] ->
-	    ok;
-       true ->
-	    Header = Request#http_request.headers,
-	    Autorization = get_authorization(Header#http_chdr.authorization),
-	    ?debug("authorization = ~p", [Autorization]),
-	    case match_access(Request#http_request.uri, Access) of
-		[Cred={basic,_Path,_User,_Password,_Realm}|_] ->
-		    ?debug("cred = ~p", [Cred]),
-		    handle_basic_auth(Socket, Request, Body, Autorization,
-				      Cred, State);
-		[Cred={digest,_Path,_User,_Password,_Realm}|_] ->
-		    handle_digest_auth(Socket, Request, Body, Autorization,
-				       Cred, State);
-		[] -> ok
-	    end
+handle_auth(_Socket, _Request, _Body, State=#state {access = []}) 
+  when not State#state.authorized ->
+    %% No access specied, all is allowed.
+    ok;
+handle_auth(Socket, Request, Body, State=#state {access = Access})  
+  when not State#state.authorized ->
+    handle_access(Access, Socket, Request, Body, State).
+
+handle_access([], _Socket, _Request, _Body, _State) ->
+    %% No access found
+    {error, unauthorised};
+handle_access([{Guard, Action} | Rest], Socket, Request, Body, State) ->
+    case match_access(Guard, Socket, Request) of
+	true -> do(Action, Socket, Request, Body, State);
+	false -> handle_access(Rest, Socket, Request, Body, State)
+    end;
+handle_access([[{Tag, Path, User, Pass, Realm}| _T] = Creds | Rest], 
+	      Socket, Request, Body, State) 
+  when (Tag =:= basic orelse Tag =:= digest) andalso
+       is_list(Path) andalso is_binary(User) andalso 
+       is_binary(Pass) andalso is_list(Realm) ->
+    %% Is this format possible ???
+    case handle_creds(Socket, Request, Body, Creds, State) of
+	ok -> ok;
+	_ -> handle_access(Rest, Socket, Request, Body, State)
+    end;
+handle_access([{Tag, Path, User, Pass, Realm}| _T] = Creds, 
+	      Socket, Request, Body, State) 
+  when (Tag =:= basic orelse Tag =:= digest) andalso
+       is_list(Path) andalso is_binary(User) andalso 
+       is_binary(Pass) andalso is_list(Realm) ->
+    %% Old way
+    handle_creds(Socket, Request, Body, Creds, State).
+	    
+do(accept, _Socket, _Request, _Body, _State) -> ok;
+do(reject, _Socket, _Request, _Body, _State) -> {error, unauthorised};
+do({accept, AccessList}, Socket, Request, Body, State) ->
+    handle_creds(Socket, Request, Body, AccessList, State).
+    
+match_access({any, GuardList}, Socket, Request) ->
+    lists:any(fun(Guard) -> match_access(Guard, Socket, Request) end, 
+	      GuardList);
+match_access({all, GuardList}, Socket, Request) ->
+    lists:all(fun(Guard) -> match_access(Guard, Socket, Request) end, 
+	      GuardList);
+match_access(afunix, #exo_socket {mdata = afunix}, _Request) ->
+    true;
+match_access(afunix, _Socket, _Request) ->
+    false;
+match_access(http, Socket, _Request) ->
+    %%% ???
+    not exo_socket:is_ssl(Socket);
+match_access(https, Socket, _Request) ->
+    %%% ???
+    exo_socket:is_ssl(Socket);
+match_access({Ip, Port}, Socket, _R) ->
+    case exo_socket:peername(Socket) of
+	{ok, {PeerIP, PeerPort}} ->
+	    ((Port =:= '*') orelse (Port =:= PeerPort)) andalso
+		match_ip(Ip, PeerIP);
+	_ -> false
+    end;
+match_access(Ip, Socket, _R) ->
+    case exo_socket:peername(Socket) of
+	{ok, {PeerIP, _Port}} -> 
+	    match_ip(Ip, PeerIP);
+	_ -> false
     end.
+
+match_ip({Pa,Pb,Pc,Pd}, {A,B,C,D}) ->
+    if ((Pa =:= '*') orelse (Pa =:= A)) andalso
+       ((Pb =:= '*') orelse (Pb =:= B)) andalso
+       ((Pc =:= '*') orelse (Pc =:= C)) andalso
+       ((Pd =:= '*') orelse (Pd =:= D)) ->
+	    true;
+       true -> false
+    end;
+match_ip({Pa,Pb,Pc,Pd,Pe,Pf,Pg,Ph}, {A,B,C,D,E,F,G,H}) ->
+    if ((Pa =:= '*') orelse (Pa =:= A)) andalso
+       ((Pb =:= '*') orelse (Pb =:= B)) andalso
+       ((Pc =:= '*') orelse (Pc =:= C)) andalso
+       ((Pd =:= '*') orelse (Pd =:= D)) andalso
+       ((Pe =:= '*') orelse (Pe =:= E)) andalso
+       ((Pf =:= '*') orelse (Pf =:= F)) andalso
+       ((Pg =:= '*') orelse (Pg =:= G)) andalso
+       ((Ph =:= '*') orelse (Ph =:= H)) ->
+	    true;
+       true -> false
+    end;
+match_ip(_, _) ->
+    false.
+
+
+handle_creds(Socket, Request, Body, Creds, State) ->
+    Header = Request#http_request.headers,
+    Autorization = get_authorization(Header#http_chdr.authorization),
+    lager:debug("authorization = ~p", [Autorization]),
+    case match_access_path(Request#http_request.uri, Creds) of
+	[Cred={basic,_Path,_User,_Password,_Realm}|_] ->
+	    lager:debug("cred = ~p", [Cred]),
+	    handle_basic_auth(Socket, Request, Body, Autorization,
+			      Cred, State);
+	[Cred={digest,_Path,_User,_Password,_Realm}|_] ->
+	    handle_digest_auth(Socket, Request, Body, Autorization,
+				       Cred, State);
+	[] -> ok
+    end.
+    
+
+    
 
 handle_basic_auth(_Socket, _Request, _Body, {basic,AuthParams},
 		  _Cred={basic,_Path,User,Password,Realm}, State) ->
@@ -266,30 +378,21 @@ handle_basic_auth(_Socket, _Request, _Body, _,
 handle_digest_auth(_Socket, Request, _Body, {digest,AuthParams},
 		   Cred={digest,_Path,_User,_Password,_Realm}, State) ->
     Response = proplists:get_value(<<"response">>,AuthParams,""),
-    Nonce = proplists:get_value(<<"nonce">>,AuthParams,""),
-    DigestUriValue = proplists:get_value(<<"uri">>,AuthParams,""),
-    %% FIXME! Verify Nonce!!!
-    A1 = a1(Cred),
-    %% ?debug("A1 = \"~s\"", [A1]),
-    HA1 = hex(crypto:md5(A1)),
-    A2 = a2(Request#http_request.method, DigestUriValue),
-    %% ?debug("A2 = \"~s\"", [A2]),
-    HA2 = hex(crypto:md5(A2)),
-    Digest = hex(kd(HA1, Nonce++":"++HA2)),
-    %% ?debug("Digest = \"~s\"", [Digest]),
+    Method = Request#http_request.method,
+    Digest = exo_http:make_digest_response(Cred, Method, AuthParams),
+    %% io:format("response=~p, digest=~p\n", [Response,Digest]),
     if Digest =:= Response ->
 	    ok;
        true ->
 	    digest_required(Request, Cred, State)
     end;
-handle_digest_auth(_Socket, Request, _Body, _,
-		   Cred={digest,_Path,_User,_Password,_Realm}, State) ->
+handle_digest_auth(_Socket, Request, _Body, _, Cred, State) ->
     digest_required(Request, Cred, State).
 
-digest_required(Request,_Cred={digest,Path,_User,_Password,Realm},State) ->
+digest_required(Request,_Cred={digest,_Path,_User,_Password,Realm},State) ->
     Nonce = nonce_value(Request, State),
     {required, ["Digest realm=",?Q,Realm,?Q," ",
-		"url=",?Q,Path,?Q," ",
+%%		"url=",?Q,Path,?Q," ",
 		"nonce=",?Q,Nonce,?Q], State}.
 
 nonce_value(Request, State) ->
@@ -299,14 +402,6 @@ nonce_value(Request, State) ->
     TimeStamp = hex(<<T:64>>),
     hex(crypto:md5([TimeStamp,":",ETag,":",State#state.private_key])).
 
-a1({_,_Path,User,Password,Realm}) ->
-    iolist_to_binary([User,":",Realm,":",Password]).
-
-a2(Method, Uri) ->
-    iolist_to_binary([atom_to_list(Method),":",Uri]).
-
-kd(Secret, Data) ->
-    crypto:md5([Secret,":",Data]).
 
 %% convert binary to ASCII hex
 hex(Bin) ->
@@ -314,20 +409,25 @@ hex(Bin) ->
 	<<X:4>> <= Bin ].
 
 now64() ->
-    {M,S,Us} = now(),
-    (M*1000000+S)*1000000+Us.
+    try
+	erlang:system_time(milli_seconds)
+    catch
+	error:undef ->
+	    {M,S,Us} = erlang:now(),
+	    (M*1000000+S)*1000000+Us
+    end.
 
-match_access(Url, Access) ->
-    match_access(Url, Access, []).
+match_access_path(Url, Access) ->
+    match_access_path(Url, Access, []).
 
-match_access(Url, [A={_Type,Path,_U,_P,_R}|Access], Acc) ->
+match_access_path(Url, [A={_Type,Path,_U,_P,_R}|Access], Acc) ->
     case lists:prefix(Path, Url#url.path) of
 	true ->
-	    match_access(Url, Access, [A|Acc]);
+	    match_access_path(Url, Access, [A|Acc]);
 	false ->
-	    match_access(Url, Access, Acc)
+	    match_access_path(Url, Access, Acc)
     end;
-match_access(_Url, [], Acc) ->
+match_access_path(_Url, [], Acc) ->
     %% find the access with the longest path match
     lists:sort(
       fun({_,Path1,_,_,_},{_,Path2,_,_,_}) ->
@@ -368,7 +468,7 @@ unq_([]) -> [].
 handle_body(Socket, Request, Body, State) ->
     RH = State#state.request_handler,
     {M, F, As} = request_handler(RH,Socket, Request, Body),
-    ?debug("exo_http_server: calling ~p with -BODY:\n~s\n-END-BODY\n",
+    lager:debug("exo_http_server: calling ~p with -BODY:\n~s\n-END-BODY\n",
 	   [RH, Body]),
     case apply(M, F, As) of
 	ok -> {ok, State};
@@ -445,7 +545,7 @@ response(S, Connection, Status, Phrase, Body, Opts) ->
 		exo_http:format_hdr(H),
 		?CRNL,
 		Body],
-    ?debug("exo_http_server: response:\n~s\n", [Response]),
+    lager:debug("exo_http_server: response:\n~s\n", [Response]),
     exo_socket:send(S, Response).
 
 content_length(B) when is_binary(B) ->
@@ -477,7 +577,7 @@ opts_take_([], L, Acc) ->
 %% @private
 handle_http_request(Socket, Request, Body) ->
     Url = Request#http_request.uri,
-    ?debug("exo_http_server: -BODY:\n~s\n-END-BODY\n", [Body]),
+    lager:debug("exo_http_server: -BODY:\n~s\n-END-BODY\n", [Body]),
     if Request#http_request.method =:= 'GET',
        Url#url.path =:= "/quit" ->
 	    response(Socket, "close", 200, "OK", "QUIT"),
@@ -492,8 +592,101 @@ handle_http_request(Socket, Request, Body) ->
 	    ok
     end.
 
+
+%%-----------------------------------------------------------------------------
+validate_auth([]) ->
+    ok;
+validate_auth([{Guard, Action} | Rest]) ->
+    case {validate_guard(Guard), validate_action(Action)} of
+	{ok, ok} -> validate_auth(Rest);
+	_O -> {error, invalid_access}
+    end;
+validate_auth([Other | Rest]) ->
+    %% Maybe old format?
+    case validate_access(Other) of
+	ok -> validate_auth(Rest);
+	_O -> {error, invalid_access}
+    end.
+	    
+validate_access({Tag, Path, User, Pass, Realm}) 
+  when (Tag =:= basic orelse Tag =:= digest) andalso
+       is_list(Path) andalso is_binary(User) andalso
+       is_binary(Pass) andalso is_list(Realm) ->
+    %% old format ok
+    ok;
+validate_access(_Other) ->
+    lager:error("Unknown access ~p", [_Other]),
+    {error, invalid_access}.
+
+validate_guard([]) ->
+    ok;
+validate_guard([Guard | Rest]) ->
+    case validate_guard(Guard) of
+	ok -> validate_guard(Rest);
+	E -> E
+    end;
+validate_guard({Tag, GuardList}) when Tag =:= any; Tag =:= all -> 
+    validate_guard(GuardList);
+validate_guard({IP, '*'}) -> validate_ip(IP);
+validate_guard({IP, Port}) when is_integer(Port) -> validate_ip(IP);
+validate_guard(http) -> ok;
+validate_guard(https) -> ok;
+validate_guard(afunix) -> ok;
+validate_guard(IP) 
+  when is_tuple(IP) andalso 
+       (tuple_size(IP) =:= 4 orelse tuple_size(IP) =:= 8) -> 
+    validate_ip(IP);
+validate_guard(_Other) -> 
+    lager:error("Unknown access guard ~p", [_Other]),
+    {error, invalid_access}.
+
+validate_ip(_IP={A, B, C, D}) ->
+    if (is_integer(A) orelse (A =:= '*')) andalso
+       (is_integer(B) orelse (B =:= '*')) andalso
+       (is_integer(C) orelse (C =:= '*')) andalso
+       (is_integer(D) orelse (D =:= '*')) ->
+	    ok;
+       true ->
+	    lager:error("Illegal IP address ~p", [_IP]),
+	    {error, invalid_access}
+    end;
+validate_ip(_IP={A, B, C, D, E, F, G, H}) ->
+    if (is_integer(A) orelse (A =:= '*')) andalso
+       (is_integer(B) orelse (B =:= '*')) andalso
+       (is_integer(C) orelse (C =:= '*')) andalso
+       (is_integer(D) orelse (D =:= '*')) andalso
+       (is_integer(E) orelse (E =:= '*')) andalso
+       (is_integer(F) orelse (F =:= '*')) andalso
+       (is_integer(G) orelse (G =:= '*')) andalso
+       (is_integer(H) orelse (H =:= '*')) ->
+	    ok;
+       true ->
+	    lager:error("Illegal IP address ~p", [_IP]),
+	    {error, invalid_access}
+    end;
+validate_ip(_Other) ->
+    lager:error("Illegal IP address ~p", [_Other]),
+    {error, invalid_access}.
+	    
+validate_action(Auth)
+  when Auth =:= accept;
+       Auth =:= reject ->
+    ok;
+validate_action({accept, AccessList} = A)->
+    case lists:all(fun(Access) ->
+			   validate_access(Access) =:= ok
+		   end, AccessList) of
+	true -> 
+	    ok;
+	false -> 
+	    lager:error("Illegal access ~p", [A]),
+	    {error, invalid_access}
+    end.
+
+
+
+%%-----------------------------------------------------------------------------
 test() ->
-    Dir = code:priv_dir(exo),
     %% Access = [],
     Access = [{basic,"/foo",<<"user">>,<<"password">>,"world"},
 	      {digest,"/test/a",<<"test">>,<<"a">>,"region"},
@@ -503,6 +696,25 @@ test() ->
 	      {digest,"/test",<<"test">>,<<"x">>,"region"},
 	      {digest,"/bar",<<"test">>,<<"bar">>,"region"}
 	     ],
+    test(Access).
+
+test(old) ->
+    test();
+test(new) ->
+   Access = [{afunix, accept},
+	     {{127, 0, 0, 1},
+	      {access, [
+			{basic,"/foo",<<"user">>,<<"password">>,"world"},
+			{digest,"/test/a",<<"test">>,<<"a">>,"region"},
+			{digest,"/test/b",<<"test">>,<<"b">>,"region"},
+			{digest,"/test/b/c",<<"test">>,<<"c">>,"region"},
+			{digest,"/test/b/d",<<"test">>,<<"d">>,"region"},
+			{digest,"/test",<<"test">>,<<"x">>,"region"},
+			{digest,"/bar",<<"test">>,<<"bar">>,"region"}]}}
+	     ],
+    test(Access);
+test(Access) ->
+    Dir = code:priv_dir(exo),
     exo_socket_server:start(9000, [tcp,probe_ssl,http],
 			    [{active,once},{reuseaddr,true},
 			     {verify, verify_none},

@@ -117,9 +117,11 @@ stop() ->
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec new(Key::term(), Policy::atom()) -> ok | {error, Error::atom()}.
+-spec new(Key::term() , Policy::atom()) -> 
+		 ok | 
+		 {error, Error::atom()}.
 
-new(Key, Policy) ->
+new(Key, Policy) when is_atom(Policy) ->
     case new_bucket({in, Key}, Policy) of
 	ok ->
 	    case new_bucket({out, Key}, Policy) of
@@ -136,7 +138,7 @@ new(Key, Policy) ->
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec delete(Key::term()) -> ok | {error, Error::atom()}.
+-spec delete(Key::term()) -> true.
 
 delete({Direction, _K} = Key) when Direction =:= in;
 				   Direction =:= out ->
@@ -178,7 +180,7 @@ fill({Direction, _K} = Key) when is_atom(Direction) ->
 	[B] when is_record(B, bucket) ->
 	   fill_bucket(B);
 	[] ->
-	   {error, unkown_key}
+	   {error, unknown_key}
     end.
 
 %%--------------------------------------------------------------------
@@ -198,7 +200,7 @@ fill_time({Direction, _K} = Key, Tokens)
 	[B] when is_record(B, bucket) ->
 	   bucket_fill_time(B, Tokens);
 	[] ->
-	    {error, unkown_key}
+	    {error, unknown_key}
     end.
 
 
@@ -220,7 +222,7 @@ wait({Direction, _K} = Key, Tokens)
 	[{Key, B}] when is_record(B, bucket) ->
 	   bucket_wait(B, Tokens);
 	[] ->
-	    {error, unkown_key}
+	    {error, unknown_key}
     end.
 	    	    
 %%--------------------------------------------------------------------
@@ -239,11 +241,11 @@ fill_wait({Direction, _K} = Key, Tokens)
   when is_number(Tokens), is_atom(Direction) ->
    lager:debug("key = ~p, tokens = ~p", [Key, Tokens]),
    case ets:lookup(?BUCKETS, Key) of
-	[B] when is_record(B, bucket) ->
-	   wait(B, Tokens),
-	   fill(B);
+	[{Key,B}] when is_record(B, bucket) ->
+	   bucket_wait(B, Tokens),
+	   fill_bucket(B);
 	[] ->
-	    {error, unkown_key}
+	    {error, unknown_key}
     end.
 
 %%--------------------------------------------------------------------
@@ -434,7 +436,7 @@ use_tokens({out, _K} = Key, Tokens) ->
 	    lager:debug("bucket ~p full, ~p.", [Key, Action]),
 	    {action, Action};
 	[] ->
-	    {error, unkown_key}
+	    {error, unknown_key}
     end.
 
 fill_bucket(B) when is_record(B, bucket) ->

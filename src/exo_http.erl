@@ -44,6 +44,7 @@
 %% parse interface
 -export([convert_uri/1]).
 -export([tokens/1]).
+-export([get_authenticate/1]).
 
 -export([set_chdr/3,
 	 set_shdr/3]).
@@ -60,16 +61,18 @@
 	 make_response/4, 
 	 auth_basic_encode/2,
 	 url_encode/1,
-	 make_headers/2
+	 make_headers/2,
+	 make_basic_request/2,
+	 make_digest_request/2
 	]).
 -export([url_decode/1,
 	 parse_query/1]).
+-export([make_digest_response/3]).
+
 
 -import(lists, [reverse/1]).
 
--define(dbg(F, A), lager:debug(F, A)).
-
-
+-define(Q, $\").
 %%
 %% Perform a HTTP/1.1 GET
 %%
@@ -371,16 +374,16 @@ request(S, Req, Body, Proxy, Timeout) ->
 	    %% FIXME: take care of POST 100-continue
 	    case recv_response(S, Timeout) of
 		{ok, Resp} ->
-		    ?dbg("response: ~p\n", [Resp]),
+		    lager:debug("response: ~p\n", [Resp]),
 		    case recv_body(S, Resp, Timeout) of
 			{ok,RespBody} ->
 			    {ok,Resp,RespBody};
 			Error ->
-			    ?dbg("body: ~p\n", [Error]),
+			    lager:debug("body: ~p\n", [Error]),
 			    Error
 		    end;
 		Error -> 
-		    ?dbg("response: ~p\n", [Error]),
+		    lager:debug("response: ~p\n", [Error]),
 		    Error
 	    end;
 	Error -> Error
@@ -416,16 +419,17 @@ open(Request,Timeout) ->
 	    exo_socket:setopts(S, [{mode,binary},{packet,http}]),
 	    {ok,S};
 	Error ->
+	    lager:debug("open failed, reason ~p\n",[Error]),
 	    Error
     end.
 
 close(S, Req, Resp) ->
     case do_close(Req,Resp) of
 	true ->
-	    ?dbg("real close\n",[]),
+	    lager:debug("real close\n",[]),
 	    exo_socket:close(S);
 	false ->
-	    ?dbg("session close\n",[]),
+	    lager:debug("session close\n",[]),
 	    exo_socket_cache:close(S)
     end.
 
@@ -488,7 +492,7 @@ send(Socket, Method, URI, Version, H, Body, Proxy) ->
 	 end,
     Request = [format_request(Method,Url,Version,Proxy),?CRNL,
 	       format_hdr(H3),?CRNL, Body],
-    ?dbg("> ~p\n", [Request]),
+    lager:debug("> ~p\n", [Request]),
     exo_socket:send(Socket, Request).
 
 %%
@@ -630,7 +634,7 @@ recv_body_eof(Socket,Timeout) ->
     recv_body_eof(Socket,fun(Data,Acc) -> [Data|Acc] end, [], Timeout).
     
 recv_body_eof(Socket,Fun,Acc,Timeout) ->
-    ?dbg("RECV_BODY_EOF: tmo=~w\n", [Timeout]),    
+    lager:debug("RECV_BODY_EOF: tmo=~w\n", [Timeout]),    
     exo_socket:setopts(Socket, [{packet,raw},{mode,binary}]),
     recv_body_eof1(Socket,Fun,Acc,Timeout).
 
@@ -652,10 +656,10 @@ recv_body_data(Socket, Len, Timeout) ->
     recv_body_data(Socket, Len, fun(Data,Acc) -> [Data|Acc] end, [], Timeout).
 
 recv_body_data(_Socket, 0, _Fun, _Acc, _Timeout) ->
-    ?dbg("RECV_BODY_DATA: len=0, tmo=~w\n", [_Timeout]),
+    lager:debug("RECV_BODY_DATA: len=0, tmo=~w\n", [_Timeout]),
     {ok, <<>>};
 recv_body_data(Socket, Len, Fun, Acc, Timeout) ->
-    ?dbg("RECV_BODY_DATA: len=~p, tmo=~w\n", [Len,Timeout]),    
+    lager:debug("RECV_BODY_DATA: len=~p, tmo=~w\n", [Len,Timeout]),    
     exo_socket:setopts(Socket, [{packet,raw},{mode,binary}]),
     case exo_socket:recv(Socket, Len, Timeout) of
 	{ok, Bin} ->
@@ -675,20 +679,20 @@ recv_body_chunks(Socket, Timeout) ->
 
 recv_body_chunks(Socket, Fun, Acc, Timeout) ->
     exo_socket:setopts(Socket, [{packet,line},{mode,list}]),
-    ?dbg("RECV_BODY_CHUNKS: tmo=~w\n", [Timeout]),
+    lager:debug("RECV_BODY_CHUNKS: tmo=~w\n", [Timeout]),
     recv_body_chunk(Socket, Fun, Acc, Timeout).
 
 recv_body_chunk(S, Fun, Acc, Timeout) ->
     case exo_socket:recv(S, 0, Timeout) of
 	{ok,Line} ->
-	    ?dbg("CHUNK-Line: ~p\n", [Line]),
+	    lager:debug("CHUNK-Line: ~p\n", [Line]),
 	    {ChunkSize,_Ext} = chunk_size(Line),
-	    ?dbg("CHUNK: ~w\n", [ChunkSize]),
+	    lager:debug("CHUNK: ~w\n", [ChunkSize]),
 	    if ChunkSize =:= 0 ->
 		    exo_socket:setopts(S, [{packet,httph}]),
 		    case recv_chunk_trailer(S, [], Timeout) of
 			{ok,_TR} ->
-			    ?dbg("CHUNK TRAILER: ~p\n", [_TR]),
+			    lager:debug("CHUNK TRAILER: ~p\n", [_TR]),
 			    exo_socket:setopts(S, [{packet,http},
 						   {mode,binary}]),
 			    {ok,list_to_binary(reverse(Acc))};
@@ -708,7 +712,7 @@ recv_body_chunk(S, Fun, Acc, Timeout) ->
 				    Acc1 = Fun(Bin,Acc),
 				    recv_body_chunk(S,Fun,Acc1,Timeout);
 				{ok, _Data} ->
-				    ?dbg("out of sync ~p\n", [_Data]),
+				    lager:debug("out of sync ~p\n", [_Data]),
 				    {error, sync_error};
 				Error ->
 				    Error
@@ -748,28 +752,28 @@ recv_hc(S, R, H, Timeout) ->
 	{ok, Hdr} ->
 	    case Hdr of
 		http_eoh ->
-		    ?dbg("EOH <\n", []),
+		    lager:debug("EOH <\n", []),
 		    Other = reverse(H#http_chdr.other),
 		    H1 = H#http_chdr { other = Other },
 		    R1 = R#http_request { headers = H1 },
-		    ?dbg("< ~s~s\n", [format_request(R1,true),
+		    lager:debug("< ~s~s\n", [format_request(R1,true),
 				      format_headers(fmt_chdr(H1))]),
 		    {ok, R1};
 		{http_header,_,K,_,V} ->
-		    ?dbg("HEADER < ~p ~p\n", [K, V]),
+		    lager:debug("HEADER < ~p ~p\n", [K, V]),
 		    recv_hc(S,R,set_chdr(K,V,H), Timeout);
 		Got ->
-		    ?dbg("HEADER ERROR ~p\n", [Got]),
+		    lager:debug("HEADER ERROR ~p\n", [Got]),
 		    {error, Got}
 	    end;
 	{error, {http_error, ?CRNL}} -> 
-	    ?dbg("ERROR CRNL <\n", []),
+	    lager:debug("ERROR CRNL <\n", []),
 	    recv_hc(S, R, H,Timeout);
 	{error, {http_error, ?NL}} -> 
-	    ?dbg("ERROR NL <\n", []),
+	    lager:debug("ERROR NL <\n", []),
 	    recv_hc(S, R, H,Timeout);
 	Error -> 
-	    ?dbg("RECV ERROR ~p <\n", [Error]),
+	    lager:debug("RECV ERROR ~p <\n", [Error]),
 	    Error
     end.
 
@@ -778,24 +782,24 @@ recv_hs(S, R, H, Timeout) ->
 	{ok, Hdr} ->
 	    case Hdr of
 		http_eoh ->
-		    ?dbg("EOH <\n", []),
+		    lager:debug("EOH <\n", []),
 		    Other = reverse(H#http_shdr.other),
 		    H1 = H#http_shdr { other = Other },
 		    R1 = R#http_response { headers = H1 },
-		    ?dbg("< ~s~s\n", [format_response(R1),
+		    lager:debug("< ~s~s\n", [format_response(R1),
 				      format_hdr(H1)]),
 		    {ok, R1};
 		{http_header,_,K,_,V} ->
-		    ?dbg("HEADER < ~p ~p\n", [K, V]),
+		    lager:debug("HEADER < ~p ~p\n", [K, V]),
 		    recv_hs(S,R,set_shdr(K,V,H),Timeout);
 		Got ->
 		    {error, Got}
 	    end;
 	{error, {http_error, ?CRNL}} -> 
-	    ?dbg("ERROR CRNL <\n", []),
+	    lager:debug("ERROR CRNL <\n", []),
 	    recv_hs(S, R, H,Timeout);
 	{error, {http_error, ?NL}} -> 
-	    ?dbg("ERROR NL <\n", []),
+	    lager:debug("ERROR NL <\n", []),
 	    recv_hs(S, R, H, Timeout);
 	Error -> Error
     end.
@@ -911,9 +915,38 @@ auth_basic_encode(User,undefined) ->
 auth_basic_encode(User,Pass) ->
     base64:encode_to_string(to_list(User)++":"++to_list(Pass)).
 
-make_headers(undefined, _Pass) -> [];
-make_headers(User, Pass) ->
+make_headers(User, Pass) ->  %% bad name should go
+    make_basic_request(User, Pass). 
+
+make_basic_request(undefined, _Pass) -> [];
+make_basic_request(User, Pass) ->
     [{"Authorization", "Basic "++auth_basic_encode(User, Pass)}].
+
+make_digest_request(undefined, _Params) -> [];
+make_digest_request(User, Params) ->
+    [{"Authorization", "Digest " ++ 
+	  make_param(<<"username">>,User) ++
+	  lookup_param(<<"realm">>, Params) ++
+	  lookup_param(<<"nonce">>, Params) ++
+	  lookup_param(<<"uri">>, Params) ++
+	  lookup_param(<<"response">>, Params)}].
+
+make_param(Key, Value) ->
+    to_key(Key)++"="++to_value(Value).
+
+lookup_param(Key, List) ->
+    case proplists:get_value(Key, List) of
+	undefined -> [];
+	Value -> ", "++make_param(Key, Value)
+    end.
+
+to_key(Bin) when is_binary(Bin) -> binary_to_list(Bin);
+to_key(List) when is_list(List) -> List.
+
+to_value(Bin) when is_binary(Bin) -> [?Q]++binary_to_list(Bin)++[?Q];
+to_value(List) when is_list(List) -> [?Q]++List++[?Q];
+to_value(Atom) when is_atom(Atom) -> atom_to_list(Atom);
+to_value(Int) when is_integer(Int) -> integer_to_list(Int).
 
 %%
 %% Url encode a string
@@ -1140,3 +1173,57 @@ tokens(undefined) ->
 tokens(Line) ->
     string:tokens(string:to_lower(Line), ";").
 
+
+%% Read and parse WWW-Authenticate header value
+get_authenticate(undefined) ->
+    {none,[]};
+get_authenticate(<<>>) ->
+    {none,[]};
+get_authenticate(<<$\s,Cs/binary>>) ->
+    get_authenticate(Cs);
+get_authenticate(<<"Basic ",Cs/binary>>) ->
+    {basic, get_params(Cs)};
+get_authenticate(<<"Digest ",Cs/binary>>) ->
+    {digest, get_params(Cs)};
+get_authenticate(List) when is_list(List) ->
+    get_authenticate(list_to_binary(List)).
+
+get_params(Bin) ->
+    Ps = binary:split(Bin, <<" ">>, [global]),
+    [ case binary:split(P, <<"=">>) of
+	  [K,V] -> {K,unq(V)};
+	  [K] -> {K,true}
+      end || P <- Ps, P =/= <<>> ].
+
+%% "unquote" a string or a binary
+unq(String) when is_binary(String) -> unq(binary_to_list(String));
+unq([$\s|Cs]) -> unq(Cs);
+unq([?Q|Cs]) -> unq_(Cs);
+unq(Cs) -> Cs.
+
+unq_([?Q|_]) -> [];
+unq_([C|Cs]) -> [C|unq_(Cs)];
+unq_([]) -> [].
+
+make_digest_response(Cred, Method, AuthParams) ->
+    Nonce = proplists:get_value(<<"nonce">>,AuthParams,""),
+    DigestUriValue = proplists:get_value(<<"uri">>,AuthParams,""),
+    %% FIXME! Verify Nonce!!!
+    A1 = a1(Cred),
+    HA1 = hex(crypto:md5(A1)),
+    A2 = a2(Method, DigestUriValue),
+    HA2 = hex(crypto:md5(A2)),
+    hex(kd(HA1, Nonce++":"++HA2)).
+
+a1({digest,_Path,User,Password,Realm}) ->
+    iolist_to_binary([User,":",Realm,":",Password]).
+
+a2(Method, Uri) ->
+    iolist_to_binary([atom_to_list(Method),":",Uri]).
+
+kd(Secret, Data) ->
+    crypto:md5([Secret,":",Data]).
+
+hex(Bin) ->
+    [ element(X+1, {$0,$1,$2,$3,$4,$5,$6,$7,$8,$9,$a,$b,$c,$d,$e,$f}) ||
+	<<X:4>> <= Bin ].
