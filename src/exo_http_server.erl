@@ -283,7 +283,7 @@ handle_digest_auth(_Socket, Request, _Body, {digest,AuthParams},
 	    digest_required(Request, Cred, State)
     end;
 handle_digest_auth(_Socket, Request, _Body, _,
-		   Cred={digest,Path,_User,_Password,_Realm}, State) ->
+		   Cred={digest,_Path,_User,_Password,_Realm}, State) ->
     digest_required(Request, Cred, State).
 
 digest_required(Request,_Cred={digest,Path,_User,_Password,Realm},State) ->

@@ -54,6 +54,8 @@
 	  state
 	 }).
 
+-define(EXO_DEFAULT_ACCEPT_TIMEOUT, 5000).
+
 %%%===================================================================
 %%% API
 %%%===================================================================
@@ -149,7 +151,7 @@ init([Port,Protos,Options,Module,Args] = _X) ->
     Options1 = proplists:delete(reuse_mode, proplists:delete(active, Options)),
     Reuse = case ReuseMode of
 		none -> none;
-		_ when ReuseMode==client; ReuseMode==server ->
+		_ when ReuseMode =:=client; ReuseMode =:= server ->
 		    {ok, RUSt} = Module:reuse_init(ReuseMode, Args),
 		    #reuse{mode = ReuseMode,
 			   port = Port,
@@ -261,26 +263,40 @@ handle_info({inet_async, LSocket, Ref, {ok,Socket}} = _Msg, State) when
     ?debug("<-- ~p~n", [_Msg]),
     Listen = State#state.listen,
     NewAccept = exo_socket:async_accept(Listen),
-    case exo_socket:async_socket(Listen, Socket, [delay_auth]) of
-	{ok, XSocket} ->
-	    case exo_socket_session:start(XSocket,
-					  State#state.module,
-					  State#state.args) of
-		{ok,Pid} ->
-		    exo_socket:controlling_process(XSocket, Pid),
-		    gen_server:cast(Pid, {activate,State#state.active});
-		_Error ->
-		    exo_socket:close(XSocket)
-	    end;
-    	_Error ->
-    	    error
-    end,
+    %% Create the socket_session process
+    Pid =
+	proc_lib:spawn(
+	  fun() ->
+		  receive
+		      controlling ->  %% control sync
+			  case exo_socket:async_socket(Listen, Socket, [delay_auth], 
+						       ?EXO_DEFAULT_ACCEPT_TIMEOUT) of
+			      {ok, XSocket} ->
+				  {ok,XSt0} = exo_socket_session:init([XSocket,
+								      State#state.module,
+								      State#state.args]),
+				  {noreply, XSt1} =
+				      exo_socket_session:handle_cast(
+					{activate, State#state.active}, XSt0),
+				  gen_server:enter_loop(exo_socket_session, [], XSt1);
+			      _Error ->
+				  error
+			  end
+		  after 3000 ->
+			  lager:warning("parent did not passed over control"),
+			  error
+		  end
+	  end),
+    inet:tcp_controlling_process(Socket, Pid),
+    Pid ! controlling,
+
     case NewAccept of
 	{ok,Ref1} ->
 	    {noreply, State#state { ref = Ref1 }};
 	{error, Reason} ->
 	    {stop, Reason, State}
     end;
+
 %% handle {ok,Socket} on bad ref ?
 handle_info({inet_async, _LSocket, Ref, {error,Reason}}, State) when
       Ref =:= State#state.ref ->

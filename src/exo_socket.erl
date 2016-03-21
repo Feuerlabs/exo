@@ -21,7 +21,7 @@
 -export([async_accept/1, async_accept/2]).
 -export([connect/2, connect/3, connect/4, connect/5]).
 %% -export([async_connect/2, async_connect/3, async_connect/4]).
--export([async_socket/2, async_socket/3]).
+-export([async_socket/2, async_socket/3, async_socket/4]).
 -export([close/1, shutdown/2]).
 -export([send/2, recv/2, recv/3]).
 -export([getopts/2, setopts/2, sockname/1, peername/1]).
@@ -177,7 +177,10 @@ maybe_auth_({ok,X}, Role0, Opts) ->
 			    {error, einval}
 		    end
 	    end
-    end.
+    end;
+maybe_auth_({error,X,Reason}, _Role0, _Opts) ->
+    close(X),
+    {error,Reason}.
 
 preserve_active(F, S) ->
     {ok, [{active,A}]} = exo_socket:getopts(S, [active]),
@@ -223,10 +226,10 @@ connect_upgrade(X, Protos0, Timeout) ->
 					opts=Opts1,
 					tags={ssl,ssl_closed,ssl_error}},
 		    connect_upgrade(X1, Protos1, Timeout);
-		Error={error,_Reason} ->
+		{error,Reason} ->
 		    ?debug("ssl:connect error=~w\n", 
-			 [_Reason]),
-		    Error
+			 [Reason]),
+		    {error,X,Reason}
 	    end;
 	[http|Protos1] ->
 	    {_, Close,Error} = X#exo_socket.tags,
@@ -275,7 +278,10 @@ async_accept(X,Timeout) when
 async_socket(Listen, Socket) ->
     async_socket(Listen, Socket, []).
 
-async_socket(Listen, Socket, AuthOpts)
+async_socket(Listen, Socket, AuthOpts) ->
+    async_socket(Listen, Socket, AuthOpts, infinity).
+
+async_socket(Listen, Socket, AuthOpts, Timeout)
   when is_record(Listen, exo_socket), is_port(Socket) ->
     Inherit = [nodelay,keepalive,delay_send,priority,tos],
     case getopts(Listen, Inherit) of
@@ -293,7 +299,7 @@ async_socket(Listen, Socket, AuthOpts)
 			    ok = exo_flow:new(Socket, Flow)
 		    end,
 		    maybe_auth(
-		      accept_upgrade(X, tl(X#exo_socket.protocol), infinity),
+		      accept_upgrade(X, tl(X#exo_socket.protocol), Timeout),
 		      server,
 		      X#exo_socket.opts ++ AuthOpts);
 		Error ->
@@ -312,7 +318,12 @@ accept(X) when is_record(X, exo_socket) ->
 accept(X, Timeout) when 
       is_record(X, exo_socket), 
       (Timeout =:= infnity orelse (is_integer(Timeout) andalso Timeout >= 0)) ->
-    accept_upgrade(X, X#exo_socket.protocol, Timeout).
+    case accept_upgrade(X, X#exo_socket.protocol, Timeout) of
+	{error,_X,Reason} ->
+	    {error, Reason};
+	{ok,X} ->
+	    {ok,X}
+    end.
 
 accept_upgrade(X=#exo_socket { mdata = M }, Protos0, Timeout) ->
     ?debug("accept protos=~w\n", [Protos0]),
@@ -322,8 +333,8 @@ accept_upgrade(X=#exo_socket { mdata = M }, Protos0, Timeout) ->
 		{ok,A} ->
 		    X1 = X#exo_socket {transport=A,socket=A},
 		    accept_upgrade(X1,Protos1,Timeout);
-		Error ->
-		    Error
+		{error,Reason} ->
+		    {error,X,Reason}
 	    end;
 	[ssl|Protos1] ->
 	    Opts = X#exo_socket.opts,
@@ -342,10 +353,10 @@ accept_upgrade(X=#exo_socket { mdata = M }, Protos0, Timeout) ->
 				      opts=Opts1,
 				      tags={ssl,ssl_closed,ssl_error}},
 		    accept_upgrade(X1, Protos1, Timeout);
-		Error={error,_Reason} ->
+		{error,Reason} ->
 		    ?debug("ssl:ssl_accept error=~w\n", 
-			 [_Reason]),
-		    Error
+			 [Reason]),
+		    {error,X,Reason}
 	    end;
 	[probe_ssl|Protos1] ->
 	    accept_probe_ssl(X,Protos1,Timeout);
@@ -390,10 +401,13 @@ accept_probe_ssl(X=#exo_socket { mdata=M, socket=S,
 	    end;
 	{TClose, S} ->
 	    ?debug("accept_probe_ssl: closed\n", []),
-	    {error, closed};
+	    {error,X,closed};
 	{TError, S, Error} ->
 	    ?debug("accept_probe_ssl: error ~w\n", [Error]),
-	    Error
+	    {error,X,Error}
+    after
+	Timeout ->
+	    {error,X,timeout}
     end.
 
 ssl_accept(Socket, Options, Timeout) ->    
